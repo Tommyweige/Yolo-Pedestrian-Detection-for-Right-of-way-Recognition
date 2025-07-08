@@ -24,13 +24,9 @@
 git clone https://github.com/your-repo-link/GUI.git
 cd GUI
 ```
-**注意**: 專案中包含一個子模組 `YOLOv8_DeepSORT_Object_Tracking`。請確保您也克隆了這個子模組：
-```bash
-git submodule update --init --recursive
-```
 
 ### 2. 安裝依賴
-本專案需要 Python 3.8 或更高版本。建議使用虛擬環境來管理依賴。
+本專案需要 Python 3.9 。建議使用虛擬環境來管理依賴。
 
 ```bash
 # 創建並激活虛擬環境 (Windows)
@@ -47,22 +43,6 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-安裝 `YOLOv8_DeepSORT_Object_Tracking` 子模組的依賴：
-```bash
-pip install -e YOLOv8_DeepSORT_Object_Tracking/'.[dev]'
-```
-或者，您可以直接安裝其 `requirements.txt`：
-```bash
-pip install -r YOLOv8_DeepSORT_Object_Tracking/requirements.txt
-```
-
-### 3. 下載 DeepSORT 權重檔案
-DeepSORT 追蹤需要預訓練的權重檔案。請從以下 Google Drive 連結下載 `deep_sort_pytorch` 資料夾，並將其放置在 `YOLOv8_DeepSORT_Object_Tracking/ultralytics/yolo/v8/detect/` 路徑下。
-
-[`DeepSORT Files Google Drive Link`](https://drive.google.com/drive/folders/1kna8eWGrSfzaR6DtNJ8_GchGgPMv3VC8?usp=sharing)
-
-### 4. 下載 YOLOv8 模型權重檔案
-本專案使用的 YOLOv8 模型權重檔案（例如 `yolov8s_tf.pt`, `yolov8l_tf.pt`, `yolov8x6_tf.pt` 等）需要手動下載。這些檔案通常可以在 Ultralytics 的官方 GitHub 倉庫或相關模型發布頁面找到。請將這些 `.pt` 檔案放置在 `YOLOv8_DeepSORT_Object_Tracking/ultralytics/yolo/v8/detect/` 路徑下。
 
 ## 使用說明
 
@@ -138,9 +118,3 @@ python start.py
 
 ## 貢獻
 歡迎任何形式的貢獻！如果您有任何建議、錯誤報告或功能請求，請隨時提交 Issue 或 Pull Request。
-
-## 許可證
-[請在此處填寫您的許可證資訊，例如 MIT License]
-
-## 聯絡方式
-[請在此處填寫您的聯絡方式，例如電子郵件或 GitHub 個人資料連結]
