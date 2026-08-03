@@ -23,6 +23,8 @@ from deep_sort_pytorch.utils.parser import get_config
 from deep_sort_pytorch.deep_sort import DeepSort
 from collections import deque
 import numpy as np
+
+DETECT_DIR = Path(__file__).resolve().parent
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 data_deque = {}
 
@@ -38,13 +40,23 @@ line = [(0, 0), (0, 0)]
 def init_tracker():
     global deepsort
     cfg_deep = get_config()
-    cfg_deep.merge_from_file("deep_sort_pytorch/configs/deep_sort.yaml")
+    deep_sort_config = DETECT_DIR / "deep_sort_pytorch" / "configs" / "deep_sort.yaml"
+    cfg_deep.merge_from_file(str(deep_sort_config))
 
-    deepsort= DeepSort(cfg_deep.DEEPSORT.REID_CKPT,
+    reid_checkpoint = Path(
+        os.environ.get("DEEPSORT_REID_CKPT", cfg_deep.DEEPSORT.REID_CKPT)
+    ).expanduser()
+    if not reid_checkpoint.is_absolute():
+        reid_checkpoint = DETECT_DIR / reid_checkpoint
+    reid_checkpoint = reid_checkpoint.resolve()
+    if not reid_checkpoint.is_file():
+        raise FileNotFoundError(f"DeepSORT checkpoint not found: {reid_checkpoint}")
+
+    deepsort= DeepSort(str(reid_checkpoint),
                             max_dist=cfg_deep.DEEPSORT.MAX_DIST, min_confidence=cfg_deep.DEEPSORT.MIN_CONFIDENCE,
                             nms_max_overlap=cfg_deep.DEEPSORT.NMS_MAX_OVERLAP, max_iou_distance=cfg_deep.DEEPSORT.MAX_IOU_DISTANCE,
                             max_age=cfg_deep.DEEPSORT.MAX_AGE, n_init=cfg_deep.DEEPSORT.N_INIT, nn_budget=cfg_deep.DEEPSORT.NN_BUDGET,
-                            use_cuda=True)
+                            use_cuda=torch.cuda.is_available())
 ##########################################################################################
 def xyxy_to_xywh(*xyxy):
     """" Calculates the relative bounding box from absolute pixel values. """

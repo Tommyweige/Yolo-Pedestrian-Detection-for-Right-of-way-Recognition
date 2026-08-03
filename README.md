@@ -43,11 +43,51 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### 3. 準備模型權重與測試影片
+
+`controller.py` 不再依賴特定電腦的 `D:` 磁碟路徑；專案內的程式路徑會以
+`controller.py` 所在位置為基準。模型權重因檔案較大且可能包含訓練資料授權，
+不會放進 Git，請另外取得與本專案相符的權重，放到專案根目錄的 `weights` 資料夾：
+
+```text
+weights/
+├── yolov8s_tf.pt
+├── yolov8l_tf.pt
+├── yolov8x6_tf.pt
+├── yolov8s_zebra.pt
+├── yolov8l_zebra.pt
+├── yolov8x6_zebra.pt
+└── ckpt.t7
+```
+
+其中 `ckpt.t7` 是 DeepSORT 的 ReID 權重；`*_tf.pt` 用於闖紅燈偵測，
+`*_zebra.pt` 用於車輛不禮讓行人偵測。測試影片不必放在專案內，啟動 GUI 後從
+「選取要偵測的影片」選擇 `.mp4`、`.avi` 或 `.mkv` 檔案即可。
+
+如果權重放在其他位置，可在啟動前設定環境變數，不需要修改原始碼：
+
+```powershell
+$env:YOLO_WEIGHTS_DIR = "D:\models\traffic"
+$env:DEEPSORT_REID_CKPT = "D:\models\traffic\ckpt.t7"
+python start.py
+```
+
+也可以只替換單一偵測模式的檔案：
+
+```powershell
+$env:YOLO_TF_MODEL = "D:\models\traffic\redlight.pt"
+$env:YOLO_ZEBRA_MODEL = "D:\models\traffic\zebra.pt"
+```
+
+程式啟動偵測前會檢查權重、影片與輸出資料夾；若檔案缺少，GUI 會顯示實際檢查的
+位置。
+
 
 ## 使用說明
 
 ### 啟動應用程式
-在專案的根目錄下，執行 `start.py` 來啟動 GUI 應用程式：
+在專案的根目錄下，執行 `start.py` 來啟動 GUI 應用程式（輸出資料夾由 GUI 選擇，
+不需要修改 `controller.py`）：
 ```bash
 python start.py
 ```
@@ -103,6 +143,7 @@ python start.py
 -   `UI.ui`: Qt Designer 介面設計檔案，用於視覺化設計 GUI。
 -   `opencv_engine.py`: 提供影片資訊讀取功能，使用 OpenCV 庫。
 -   `requirements.txt`: 主專案的 Python 依賴列表。
+-   `weights/`: 本機使用的 YOLOv8 與 DeepSORT 權重（不納入 Git）。
 -   `YOLOv8_DeepSORT_Object_Tracking/`: 包含 YOLOv8 和 DeepSORT 相關的程式碼和模型。
     -   `YOLOv8_DeepSORT_Object_Tracking/requirements.txt`: 子模組的 Python 依賴列表。
     -   `YOLOv8_DeepSORT_Object_Tracking/ultralytics/yolo/v8/detect/predict_tf.py`: 處理闖紅燈偵測的核心腳本。
@@ -112,7 +153,8 @@ python start.py
 ## 故障排除
 
 -   **`ModuleNotFoundError` 或其他依賴問題**: 確保您已按照「安裝指南」中的步驟正確安裝了所有 `requirements.txt` 檔案中的依賴，並且虛擬環境已激活。
--   **模型權重檔案未找到**: 確保您已將 YOLOv8 和 DeepSORT 的權重檔案放置在正確的路徑下。
+-   **模型權重檔案未找到**: 確保檔名與 `weights/README.md` 相同，或設定
+    `YOLO_WEIGHTS_DIR`、`DEEPSORT_REID_CKPT`、`YOLO_TF_MODEL`、`YOLO_ZEBRA_MODEL`。
 -   **影片無法播放或處理**: 檢查影片檔案是否損壞，或格式是否受支援。確保您的系統安裝了必要的影片解碼器。
 -   **GUI 介面顯示異常**: 嘗試重新生成 `UI.py` 檔案（如果 `UI.ui` 有修改）。
 
