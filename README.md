@@ -47,7 +47,28 @@ pip install -r requirements.txt
 
 `controller.py` 不再依賴特定電腦的 `D:` 磁碟路徑；專案內的程式路徑會以
 `controller.py` 所在位置為基準。模型權重因檔案較大且可能包含訓練資料授權，
-不會放進 Git，請另外取得與本專案相符的權重，放到專案根目錄的 `weights` 資料夾：
+不會放進 Git。**本專案的模型由 TommyPanLab 提供，下載位置是
+[Hugging Face：TommyPanLab/traffic-violation-yolov8](https://huggingface.co/TommyPanLab/traffic-violation-yolov8)。**
+
+模型庫中的檔案位置如下；下載後將七個檔案直接放到專案根目錄的 `weights/`，
+不要在本機 `weights/` 內保留模型庫的子資料夾結構：
+
+| 用途 | Hugging Face 中的位置 | 本機檔名 |
+|---|---|---|
+| 闖紅燈偵測 | `traffic-light/` | `yolov8s_tf.pt`、`yolov8l_tf.pt`、`yolov8x6_tf.pt` |
+| 不禮讓行人偵測 | `right-of-way/` | `yolov8s_zebra.pt`、`yolov8l_zebra.pt`、`yolov8x6_zebra.pt` |
+| DeepSORT 追蹤 | `tracking/ckpt.t7` | `ckpt.t7` |
+
+如果模型庫要求登入，請先使用 `hf auth login`，並確認帳號有該模型庫的讀取權限。
+本次實測使用的固定版本為 `98f890a251c03aff28e164c6e835715dbc5019a6`，七個檔案皆已驗證大小與 SHA-256。
+
+**目前這台電腦的模型存放位置：**
+
+```text
+C:\Users\tommy\.codex\worktrees\8588\Yolo-Pedestrian-Detection-for-Right-of-way-Recognition\weights
+```
+
+這是本次工作目錄的本機路徑；其他電腦請使用自己的 `<專案根目錄>\weights`。預期結構為：
 
 ```text
 weights/

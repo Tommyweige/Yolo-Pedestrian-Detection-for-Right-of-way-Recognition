@@ -1,7 +1,11 @@
 # Runtime model weights
 
-The repository does not include model checkpoints. Put the checkpoints supplied
-with the project in this directory before starting the GUI:
+Download the project checkpoints from
+[TommyPanLab/traffic-violation-yolov8 on Hugging Face](https://huggingface.co/TommyPanLab/traffic-violation-yolov8).
+The upstream folders are `traffic-light/`, `right-of-way/`, and `tracking/`.
+Place all seven files directly in this directory (without those subfolders)
+before starting the GUI. See the [project README](../README.md#3-準備模型權重與測試影片)
+for the current local path and the validated model revision:
 
 ```text
 weights/
