@@ -154,6 +154,10 @@ mod native {
     use std::{os::windows::ffi::OsStrExt, path::Path};
     use windows::{
         Win32::{
+            Graphics::{
+                Direct3D::D3D_DRIVER_TYPE_UNKNOWN, Direct3D10::ID3D10Multithread, Direct3D11::*,
+                Dxgi::*,
+            },
             Media::MediaFoundation::*,
             System::Com::{
                 COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize,
@@ -164,6 +168,71 @@ mod native {
     };
 
     const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+
+    struct Hardware {
+        manager: IMFDXGIDeviceManager,
+        name: String,
+    }
+
+    impl Hardware {
+        fn create() -> windows::core::Result<Self> {
+            // SAFETY: COM is initialized; all D3D objects stay on the decoder thread.
+            unsafe {
+                let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
+                let mut adapters = Vec::new();
+                let mut index = 0;
+                loop {
+                    let adapter = match factory.EnumAdapters1(index) {
+                        Ok(adapter) => adapter,
+                        Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                        Err(error) => return Err(error),
+                    };
+                    let description = adapter.GetDesc1()?;
+                    if description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 {
+                        adapters.push((description.VendorId != 0x10de, adapter, description));
+                    }
+                    index += 1;
+                }
+                adapters.sort_by_key(|item| item.0);
+                let mut last_error = invalid("找不到支援影片解碼的顯卡。");
+                for (_, adapter, description) in adapters {
+                    let mut device = None;
+                    if let Err(error) = D3D11CreateDevice(
+                        &adapter,
+                        D3D_DRIVER_TYPE_UNKNOWN,
+                        Default::default(),
+                        D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                        None,
+                        D3D11_SDK_VERSION,
+                        Some(&mut device),
+                        None,
+                        None,
+                    ) {
+                        last_error = error;
+                        continue;
+                    }
+                    let device = device.ok_or_else(|| invalid("無法建立 D3D11 裝置。"))?;
+                    let _ = device
+                        .cast::<ID3D10Multithread>()?
+                        .SetMultithreadProtected(true);
+                    let (mut token, mut manager) = (0, None);
+                    MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
+                    let manager = manager.ok_or_else(|| invalid("無法建立 DXGI 裝置管理員。"))?;
+                    manager.ResetDevice(&device, token)?;
+                    let end = description
+                        .Description
+                        .iter()
+                        .position(|value| *value == 0)
+                        .unwrap_or(description.Description.len());
+                    return Ok(Self {
+                        manager,
+                        name: String::from_utf16_lossy(&description.Description[..end]),
+                    });
+                }
+                Err(last_error)
+            }
+        }
+    }
 
     fn read_sample(source: &IMFSourceReader) -> windows::core::Result<Option<(IMFSample, i64)>> {
         // SAFETY: caller owns a source reader initialized on this decoder thread.
@@ -221,25 +290,63 @@ mod native {
         count: u64,
         last: Option<i64>,
         origin: i64,
+        #[cfg(test)]
+        pub(super) gpu_output: bool,
+        _hardware: Option<Hardware>,
         // Fields drop in declaration order: source must release before MFShutdown.
         _runtime: Runtime,
     }
 
     impl Reader {
         pub fn open(path: &Path) -> Result<Self, String> {
+            let mode =
+                std::env::var("TRAFFIC_VIDEO_ACCELERATION").unwrap_or_else(|_| "auto".into());
+            match mode.as_str() {
+                "software" => Self::open_mode(path, false),
+                "hardware" => Self::open_mode(path, true),
+                "auto" => Self::open_mode(path, true).or_else(|error| {
+                    eprintln!("Preview hardware unavailable: {error}; falling back to software");
+                    Self::open_mode(path, false)
+                }),
+                _ => Err("TRAFFIC_VIDEO_ACCELERATION 必須為 auto、hardware 或 software。".into()),
+            }
+        }
+
+        pub(super) fn open_mode(path: &Path, accelerated: bool) -> Result<Self, String> {
             let open = || -> windows::core::Result<Self> {
                 let runtime = Runtime::start()?;
+                let hardware = if accelerated {
+                    Some(Hardware::create()?)
+                } else {
+                    None
+                };
                 let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
                 // SAFETY: all pointers refer to owned, live values; reader stays on this thread.
                 unsafe {
                     let mut attributes = None;
-                    MFCreateAttributes(&mut attributes, 1)?;
+                    MFCreateAttributes(&mut attributes, 4)?;
                     let attributes = attributes.ok_or_else(|| invalid("無法建立影片設定。"))?;
                     attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;
+                    if let Some(hardware) = &hardware {
+                        attributes.SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, &hardware.manager)?;
+                        attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
+                    } else {
+                        attributes.SetUINT32(&MF_SOURCE_READER_DISABLE_DXVA, 1)?;
+                    }
                     let source = MFCreateSourceReaderFromURL(PCWSTR(path.as_ptr()), &attributes)?;
                     source.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
                     source.SetStreamSelection(VIDEO, true)?;
                     let original = source.GetCurrentMediaType(VIDEO)?;
+                    if hardware.is_some() {
+                        let native_output = MFCreateMediaType()?;
+                        native_output.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+                        native_output.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+                        source
+                            .SetCurrentMediaType(VIDEO, None, &native_output)
+                            .map_err(|e| {
+                                windows::core::Error::new(e.code(), format!("Set NV12 output: {e}"))
+                            })?;
+                    }
                     let rate = original.GetUINT64(&MF_MT_FRAME_RATE)?;
                     let numerator = (rate >> 32) as u32;
                     let denominator = rate as u32;
@@ -251,7 +358,9 @@ mod native {
                     let mut timestamps = Vec::new();
                     // Compressed B-frames arrive in decode order; sample a group and sort by presentation time.
                     for _ in 0..8 {
-                        if let Some((_, timestamp)) = read_sample(&source)? {
+                        if let Some((_, timestamp)) = read_sample(&source).map_err(|e| {
+                            windows::core::Error::new(e.code(), format!("Probe timestamps: {e}"))
+                        })? {
                             timestamps.push(timestamp);
                         } else {
                             break;
@@ -288,7 +397,28 @@ mod native {
                         output.SetUINT64(&MF_MT_FRAME_RATE, output_rate)?;
                     }
                     output.SetUINT64(&MF_MT_FRAME_SIZE, ((width as u64) << 32) | height as u64)?;
-                    source.SetCurrentMediaType(VIDEO, None, &output)?;
+                    source
+                        .SetCurrentMediaType(VIDEO, None, &output)
+                        .map_err(|e| {
+                            windows::core::Error::new(e.code(), format!("Set RGB output: {e}"))
+                        })?;
+                    // Decode a real sample before accepting this pipeline: unsupported formats
+                    // must fall back during open, rather than leaving the preview unusable.
+                    let (sample, _) = read_sample(&source)
+                        .map_err(|e| {
+                            windows::core::Error::new(e.code(), format!("Read RGB output: {e}"))
+                        })?
+                        .ok_or_else(|| invalid("影片沒有解碼輸出。"))?;
+                    let buffer = sample.GetBufferByIndex(0)?;
+                    let gpu_output = buffer.cast::<IMFDXGIBuffer>().is_ok();
+                    eprintln!(
+                        "Preview device: {}; GPU output: {}",
+                        hardware
+                            .as_ref()
+                            .map_or("software", |hardware| hardware.name.as_str()),
+                        gpu_output
+                    );
+                    source.SetCurrentPosition(&GUID::zeroed(), &PROPVARIANT::from(0_i64))?;
                     let count = (duration as f64 * fps / 10_000_000.0).round().max(1.0) as u64;
                     Ok(Self {
                         source,
@@ -296,6 +426,9 @@ mod native {
                         count,
                         last: None,
                         origin,
+                        #[cfg(test)]
+                        gpu_output,
+                        _hardware: hardware,
                         _runtime: runtime,
                     })
                 }
@@ -356,6 +489,8 @@ mod native {
                     let media_type = self.source.GetCurrentMediaType(VIDEO)?;
                     let size = media_type.GetUINT64(&MF_MT_FRAME_SIZE)?;
                     let (width, height) = ((size >> 32) as usize, size as u32 as usize);
+                    // ponytail: GPU frames are read back for egui's pixel upload; use shared
+                    // D3D/render textures if this copy becomes the preview bottleneck.
                     let buffer = sample.ConvertToContiguousBuffer()?;
                     let image = if let Ok(buffer2d) = buffer.cast::<IMF2DBuffer2>() {
                         let (mut first, mut start) = (std::ptr::null_mut(), std::ptr::null_mut());
@@ -585,6 +720,69 @@ mod tests {
         assert!(rgb_image(&bytes[..15], 2, 2, 12, 0).is_err());
         assert!(rgb_image(&bytes, 2, 2, 4, 0).is_err());
         assert!(rgb_image(&bytes, 2, 2, -12, 0).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Set TRAFFIC_TEST_VIDEO to a clip for the software/hardware decode benchmark"]
+    fn decode_throughput() {
+        let path = PathBuf::from(std::env::var("TRAFFIC_TEST_VIDEO").unwrap());
+        let hardware = std::env::var("TRAFFIC_VIDEO_ACCELERATION").as_deref() == Ok("hardware");
+        for _ in 0..3 {
+            let mut reader = native::Reader::open_mode(&path, hardware).unwrap();
+            if hardware {
+                assert!(reader.gpu_output);
+            }
+            let started = std::time::Instant::now();
+            let mut decoded = 0;
+            while let Some(frame) = reader.read(decoded, || false).unwrap() {
+                assert!(!frame.image.pixels.is_empty());
+                decoded += 1;
+            }
+            let elapsed = started.elapsed().as_secs_f64();
+            eprintln!(
+                "DECODE_PROFILE {}",
+                serde_json::json!({"hardware":hardware,
+                "frames":decoded,"seconds":elapsed,"fps":decoded as f64 / elapsed})
+            );
+            assert!(decoded > 0);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Set TRAFFIC_TEST_VIDEO to an H264 clip; requires a D3D11 video device"]
+    fn hardware_matches_software() {
+        let path = PathBuf::from(std::env::var("TRAFFIC_TEST_VIDEO").unwrap());
+        let mut software = native::Reader::open_mode(&path, false).unwrap();
+        let mut hardware = native::Reader::open_mode(&path, true).unwrap();
+        assert!(
+            hardware.gpu_output,
+            "Hardware pipeline must produce D3D11 buffers"
+        );
+        for frame in [0, 9, 1, 17] {
+            let expected = software.read(frame, || false).unwrap().unwrap();
+            let actual = hardware.read(frame, || false).unwrap().unwrap();
+            assert_eq!(actual.image.size, expected.image.size);
+            assert_eq!(actual.count, expected.count);
+            assert_eq!(actual.fps, expected.fps);
+            let difference: u64 = actual
+                .image
+                .pixels
+                .iter()
+                .zip(&expected.image.pixels)
+                .map(|(a, b)| {
+                    a.to_array()[..3]
+                        .iter()
+                        .zip(&b.to_array()[..3])
+                        .map(|(a, b)| a.abs_diff(*b) as u64)
+                        .sum::<u64>()
+                })
+                .sum();
+            let mean = difference as f64 / (actual.image.pixels.len() * 3) as f64;
+            eprintln!("HW_PIXEL_PROFILE frame={frame} mean_error={mean:.4}");
+            assert!(mean < 3.0, "Hardware frame differs from software: {mean}");
+        }
     }
 
     #[cfg(windows)]

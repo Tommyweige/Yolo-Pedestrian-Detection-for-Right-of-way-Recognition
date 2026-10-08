@@ -119,8 +119,20 @@ Rust 介面提供影片多選、輸出資料夾、模型選擇、兩種偵測模
 預覽時間軸的影格數由長度與幀率估算，可變幀率影片以名義幀率顯示。
 原生預覽目前支援 Windows，實際編碼支援取決於系統的影片解碼器；
 目前介面使用 OpenGL，由系統／驅動決定顯卡，啟動時會輸出 `UI GPU` 診斷。
-Media Foundation 預覽尚未設定 D3D device manager，未實作指定 NVIDIA 的硬體解碼；
-介面／預覽用哪張顯卡與 Python 模型的 CUDA 裝置是兩個獨立設定。
+Media Foundation 預覽預設建立 D3D11 / DXGI device manager，優先選 NVIDIA，
+沒有 NVIDIA 時使用其他硬體顯卡。硬體管線建立或初始解碼失敗會退回軟體模式，並輸出原因。
+會先協商 NV12 解碼，再透過影片處理器轉為縮小的 RGB 畫面；可用以下設定比較或排查：
+
+```powershell
+$env:TRAFFIC_VIDEO_ACCELERATION = 'auto' # 預設，硬體優先，失敗退回軟體
+# 'hardware' 要求 D3D 管線成功；'software' 關閉 DXVA
+python start.py
+```
+
+啟動記錄的 `Preview device` 與 `GPU output` 顯示預覽裝置及是否輸出 D3D 影格；
+特定編碼是否真的使用硬體解碼還取決於系統解碼器與驅動，不以選到顯卡就當作已加速。
+目前影格會回讀至 CPU 再上傳 OpenGL，所以連續播放不保證比軟體模式更快。
+介面繪製、預覽解碼與 Python CUDA 推論分別選擇裝置，介面可能仍使用 Intel。
 無法解碼時會顯示錯誤。Media Foundation 的設定依據
 [Microsoft Source Reader 文件](https://learn.microsoft.com/en-us/windows/win32/medfound/processing-media-data-with-the-source-reader)。
 
@@ -156,6 +168,15 @@ Rust 測試會檢查像素通道、正負行距、截斷緩衝區；執行上面
 $env:TRAFFIC_TEST_VIDEO = (Resolve-Path runtime/ui-check/preview.avi).Path
 cargo test --manifest-path rust-ui/Cargo.toml native_decode_seek_and_end -- --ignored
 cargo test --manifest-path rust-ui/Cargo.toml rapid_scrubbing -- --ignored
+```
+
+有 D3D11 影片裝置時，可以對 H.264 影片執行硬體／軟體畫面比較與完整解碼測量：
+
+```powershell
+$env:TRAFFIC_TEST_VIDEO = 'C:\path\to\traffic.mp4'
+cargo test --manifest-path rust-ui/Cargo.toml hardware_matches_software -- --ignored --nocapture
+$env:TRAFFIC_VIDEO_ACCELERATION = 'hardware' # 可改成 software 比較
+cargo test --manifest-path rust-ui/Cargo.toml decode_throughput -- --ignored --nocapture
 ```
 
 真實權重檢查會逐幀解碼輸出並檢查幀數、幀率及後端完成事件：

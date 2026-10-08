@@ -58,7 +58,7 @@ torchvision 0.28.0+cu130、ultralytics 8.0.3、NumPy 1.26.4、OpenCV 4.11.0.86�
 證據：`runtime/e2e/real-zebra-s/summary.json`、`events.jsonl` 與同目錄下的輸出影片。
 
 另外直接從 Rust 視窗啟動同一支完整影片，經 JSON-lines bridge 與真實 Python 預測程序處理。
-視窗收到完成訊號，單片／批次進度均為 100%，没有錯誤；GUI 檢查總耗時 **106.47 秒**，
+視窗收到完成訊號，單片／批次進度均為 100%，沒有錯誤；GUI 檢查總耗時 **106.47 秒**，
 含視窗初始化及完成截圖，不能直接當作純推論速度。輸出再次逐幀解碼為 900 幀、60 fps。
 證據：`runtime/e2e/gui-real.png`、`gui-real.json`、`gui-real/summary.json` 與該目錄的輸出影片。
 
@@ -68,7 +68,7 @@ torchvision 0.28.0+cu130、ultralytics 8.0.3、NumPy 1.26.4、OpenCV 4.11.0.86�
 
 ## 下一步改善順序
 
-### GPU 路徑確認
+### GPU 路徑確認（硬體預覽實作前，fb376b7）
 
 另以真實權重執行預測腳本，日誌顯示：
 `CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)`。
@@ -77,7 +77,7 @@ Rust 視窗建立時讀取 OpenGL 的實際 vendor/renderer，顯示：
 證據分別在 `runtime/gpu-check/inference.log`、`runtime/gpu-check/ui-gpu.log`。
 
 因此模型推論已走 NVIDIA CUDA，但 OpenGL 介面由系統／驅動選到 Intel。
-預覽目前沒有提供 `MF_SOURCE_READER_D3D_MANAGER`，並未接上指定 NVIDIA 的硬體解碼路徑。
+當時預覽沒有提供 `MF_SOURCE_READER_D3D_MANAGER`，未接上指定 NVIDIA 的硬體解碼路徑。
 原生 Media Foundation 解碼不代表已實作 NVDEC，也不能由 Intel 的 3D 使用率推論 YOLO 在 Intel 上運算。
 [Microsoft 的 Source Reader 文件](https://learn.microsoft.com/en-us/windows/win32/medfound/mf-source-reader-d3d-manager)
 指出提供 D3D 裝置可讓支援 DXVA 的解碼器使用硬體加速。
@@ -85,9 +85,45 @@ Rust 視窗建立時讀取 OpenGL 的實際 vendor/renderer，顯示：
 若要調整介面顯卡，可在 Windows「設定 → 系統 → 顯示器 → 圖形」為
 `rust-ui/target/debug/traffic-desktop.exe` 設定高效能 GPU，再重新啟動並確認 `UI GPU`。
 更換執行檔路徑（例如 release）需對該路徑另設。
-這只處理介面繪製；影片硬體解碼仍需要另接 D3D device manager 與解碼／色彩轉換管線，
+這只處理介面繪製；當時影片硬體解碼仍需要另接 D3D device manager 與解碼／色彩轉換管線，
 還應量測 CPU 回讀與跨顯卡複製成本，不能承諾切換顯卡就會消除遠距定位延遲。
 [Windows 圖形設定說明](https://support.microsoft.com/en-au/windows/hardware/display-graphics/optimizations-for-windowed-games-in-windows-11)。
+
+### NVIDIA 硬體預覽實作與驗證
+
+後續實作 D3D11 video device、DXGI device manager 與多執行緒保護，
+DXGI 列舉顯卡後優先選 vendor `0x10de`（NVIDIA），再接上 Source Reader。
+硬體路徑先協商 NV12 再探測時間戳，避免硬體解碼器不支援預設媒體格式而回報 `0xC00D36B4`。
+影片處理器把畫面縮至最長邊 960 並轉 RGB32；建立／初次解碼失敗時 `auto` 重開軟體路徑。
+`TRAFFIC_VIDEO_ACCELERATION` 支援 `auto`（預設）、`hardware`（D3D 管線失敗報錯）、`software`。
+
+同一支使用者 H.264 影片的實測：
+
+| 測量 | 軟體 | NVIDIA 硬體 |
+|---|---:|---:|
+| 六次遠距定位的中位數 | 390.7 ms | 167.6 ms |
+| 三次最新定位優先的中位數 | 46.6 ms | 83.6 ms |
+| 三次完整解碼吞吐量中位數 | 142.4 fps | 71.5 fps |
+| 每輪完整解碼影格數 | 900 | 900 |
+
+這是本機 debug 建置、同一版本、無 YOLO 同時推論的測量，含 RGB 轉換、GPU 回讀與 egui 像素整理。
+遠距定位改善約 57%，但 GPU 影格回讀仍有成本，最新請求及連續解碼反而較慢。
+因此不能宣稱硬體版全面快於軟體版；若偏重連續播放，可選 `software`。
+尚未實作 D3D 與渲染器共享紋理的零複製管線，UI OpenGL 仍可能使用 Intel。
+
+實際輸出為 D3D 影格（`GPU output: true`），同時採樣 NVIDIA decoder utilization 為 85–91%；
+切到軟體測量後降為 0%。原始證據：`runtime/gpu-check/nvidia-seeking.csv`、
+`seek-hardware.txt`、`seek-software.txt`、`decode-hardware.txt`、`decode-software.txt`。
+H.264 fixture 與使用者影片各四個位置比較硬體／軟體畫面，使用者影片 RGB 通道平均差約 0.75–0.82／255，
+低於測試門檻 3／255；尺寸、幀率、估算幀數一致。少量色差來自兩種色彩轉換路徑。
+五種原生影片 fixture 的內容、前後定位、結尾、錯誤檔案檢查與快速定位合併皆通過。
+
+Rust 真實視窗使用不存在的 Python 路徑播放使用者影片，日誌確認預覽在 RTX 4060、介面在 Intel。
+原生資料夾選擇器保持開啟時，畫面更新 254 次、播放到第 98 幀，成功截圖退出。
+證據：`runtime/gpu-check/gui-hardware.log`、`gui-hardware.json`、`gui-hardware.png`。
+
+[Microsoft D3D11 解碼文件](https://learn.microsoft.com/en-us/windows/win32/medfound/supporting-direct3d-11-video-decoding-in-media-foundation)
+是裝置管理員與多執行緒保護的依據。
 
 | 優先 | 發現與影響 | 建議 |
 |---|---|---|
