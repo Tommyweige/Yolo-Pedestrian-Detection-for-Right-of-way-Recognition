@@ -14,7 +14,7 @@
 - **影片播放與控制**: 在主畫面中預覽單一選定的影片，並提供播放、暫停、停止功能。
 - **進度顯示**: 顯示當前影片和所有影片的處理進度。
 - **影片旋轉校正**: 提供一個獨立的「校正畫面」頁面，允許使用者預覽影片並調整旋轉角度，以確保偵測的準確性。
-- **使用者友善的 GUI**: 基於 PyQt5 開發，提供直觀的操作介面。
+- **Rust 桌面介面與影片預覽**: 使用 egui/eframe 與 Windows 原生影片解碼；Python 保留 YOLOv8、DeepSORT 與偵測前的旋轉轉檔。
 
 ## 安裝指南
 
@@ -86,11 +86,95 @@ $env:YOLO_ZEBRA_MODEL = "D:\models\traffic\zebra.pt"
 ## 使用說明
 
 ### 啟動應用程式
-在專案的根目錄下，執行 `start.py` 來啟動 GUI 應用程式（輸出資料夾由 GUI 選擇，
-不需要修改 `controller.py`）：
-```bash
+
+先安裝 [Rust](https://www.rust-lang.org/tools/install)，Windows 建置需要 C++ Build Tools
+（MSVC 工具鏈）或 MinGW（GNU 工具鏈）。在專案根目錄建置一次：
+
+```powershell
+cargo build --manifest-path rust-ui/Cargo.toml
 python start.py
 ```
+
+`start.py` 會啟動 Rust 視窗。若本機有 `runtime/detection-env/Scripts/python.exe`，
+會優先使用此偵測環境，否則使用目前的 Python；明確設定 `TRAFFIC_PYTHON` 可覆寫。
+也可以直接執行 `rust-ui/target/debug/traffic-desktop.exe`；若 Python 不在 PATH，先設定：
+
+```powershell
+$env:TRAFFIC_PYTHON = "C:\path\to\python.exe"
+```
+
+Rust 介面提供影片多選、輸出資料夾、模型選擇、兩種偵測模式、批次與單片進度、
+影片播放／暫停／停止／影格定位，以及 -45° 到 45° 的旋轉校正。
+右側先選擇偵測模式、模型與輸出資料夾，再按「開始分析」。影片清單可切換預覽，
+完整路徑與執行記錄可展開查看；右上角可切換深色／淺色外觀。
+多選影片時預覽第一部；校正參考影片不會改變偵測清單，按「套用旋轉角度」後才套用於偵測。
+取消偵測會停止 Python 預測程序；若正在旋轉轉檔，會等待轉檔完成才取消。
+預覽使用 Rust 背景執行緒呼叫 Windows Media Foundation 解碼，並將像素直接送至影片紋理；
+播放、暫停、停止、定位與旋轉預覽都不啟動 Python。旋轉預覽由 GPU 繪製，
+影片最長邊縮至 960 像素，維持無聲預覽；偵測仍使用原始影片。
+連續播放按時間推進，附近影格連續解碼，跨越較長時間或往回定位時才重新搜尋。
+檔案與資料夾選擇器在背景執行緒開啟，選擇期間主視窗與預覽仍可操作。
+拖曳時間軸每 50 ms 提交最新位置、放開時立即提交；解碼器會取消過時的定位請求，
+避免先解完舊位置才回應新位置。長 GOP 影片的單次遠距定位仍需從關鍵影格解碼。
+預覽時間軸的影格數由長度與幀率估算，可變幀率影片以名義幀率顯示。
+原生預覽目前支援 Windows，實際編碼支援取決於系統的影片解碼器；
+目前介面使用 OpenGL，由系統／驅動決定顯卡，啟動時會輸出 `UI GPU` 診斷。
+Media Foundation 預覽尚未設定 D3D device manager，未實作指定 NVIDIA 的硬體解碼；
+介面／預覽用哪張顯卡與 Python 模型的 CUDA 裝置是兩個獨立設定。
+無法解碼時會顯示錯誤。Media Foundation 的設定依據
+[Microsoft Source Reader 文件](https://learn.microsoft.com/en-us/windows/win32/medfound/processing-media-data-with-the-source-reader)。
+
+模型權重與上述環境變數沿用原有設定。Rust 本身不需要 PyQt5，
+影片預覽不需要 Python、OpenCV 或另外安裝 FFmpeg；Python 偵測仍需要原本的依賴，
+包括 OpenCV 與偵測前旋轉轉檔用的 MoviePy。
+偵測核心使用已安裝的 `ultralytics==8.0.3`，交通規則與 DeepSORT 使用專案腳本。
+專案內的 ultralytics 副本缺少匯入檔案，不能作為完整套件使用。
+舊版模型含 Python pickle；偵測子程序設定 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`
+以維持舊模型載入行為，請只使用可信且驗證過來源的權重。
+若部署到其他資料夾，設定 `TRAFFIC_PROJECT_ROOT` 指向含 `desktop_bridge.py` 的專案根目錄；
+中文預設使用作業系統字型，也可用 `TRAFFIC_FONT` 指定支援繁體中文的字型檔。
+
+驗證方式：
+
+```powershell
+cargo check --manifest-path rust-ui/Cargo.toml
+cargo test --manifest-path rust-ui/Cargo.toml
+python test_desktop_bridge.py
+pwsh -File rust-ui/check-ui.ps1 -Python python
+```
+
+Python 檢查會建立臨時影片與替代預測腳本，驗證偵測轉檔、中文／空白路徑、
+進度、子程序錯誤、取消與缺少權重提示，無須模型權重；這不代表已驗證真實模型推論。
+`check-ui.ps1` 僅用 Python 產生測試素材；執行 Rust 視窗時會指定不存在的 Python 路徑，
+確認預覽可以獨立運作。它會開啟六種實際介面狀態，檢查程序正常退出與截圖更新，
+將空白畫面、影片預覽、播放至最後影格、原生資料夾選擇期間播放、深色旋轉校正與小視窗截圖
+存入 `runtime/ui-check/`，供視覺檢查。
+Rust 測試會檢查像素通道、正負行距、截斷緩衝區；執行上面的畫面檢查後，
+可額外驗證原生解碼、影格內容、前後定位、影片結尾與錯誤檔案：
+
+```powershell
+$env:TRAFFIC_TEST_VIDEO = (Resolve-Path runtime/ui-check/preview.avi).Path
+cargo test --manifest-path rust-ui/Cargo.toml native_decode_seek_and_end -- --ignored
+cargo test --manifest-path rust-ui/Cargo.toml rapid_scrubbing -- --ignored
+```
+
+真實權重檢查會逐幀解碼輸出並檢查幀數、幀率及後端完成事件：
+
+```powershell
+python scripts/validate_detection.py --video C:\path\to\traffic.mp4 --output C:\existing\output --model yolov8s --task zebra
+```
+
+這是流程驗證，違規辨識準確率需要標註資料另行評估。
+本機模型來源、六模型檢查、1080p60 實測及效能改善記錄見
+[2026-10-08 驗證報告](docs/performance-validation-2026-10-08.md)。
+
+舊版 PyQt 介面仍可透過以下方式啟動：
+
+```powershell
+python start.py --legacy
+```
+
+以下為舊版介面操作說明，Rust 版使用相同的偵測設定與主要操作。
 
 ### 主畫面 (`主畫面` Tab)
 
@@ -137,7 +221,11 @@ python start.py
 
 ## 專案結構 (核心檔案)
 
--   `start.py`: 應用程式的入口點，啟動 PyQt5 GUI。
+-   `start.py`: 應用程式的入口點，啟動 Rust GUI；`--legacy` 啟動 PyQt5。
+-   `rust-ui/`: Rust 桌面介面與 Cargo 鎖定檔。
+-   `rust-ui/src/video.rs`: Rust 原生影片解碼與預覽執行緒。
+-   `desktop_bridge.py`: Rust 與 Python 偵測程序的 JSON-lines 通訊。
+-   `detection_backend.py`: 兩種介面共用的權重驗證、偵測程序與進度事件。
 -   `controller.py`: 包含 GUI 的主要邏輯，處理使用者互動、影片選擇、偵測任務的啟動和進度更新。
 -   `UI.py`: 由 `UI.ui` 自動生成的 Python 檔案，定義了 GUI 的介面佈局和元件。
 -   `UI.ui`: Qt Designer 介面設計檔案，用於視覺化設計 GUI。

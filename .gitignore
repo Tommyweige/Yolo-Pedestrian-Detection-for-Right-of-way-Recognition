@@ -11,3 +11,4 @@ __pycache__/
 
 # Runtime previews and temporary files.
 runtime/
+rust-ui/target/

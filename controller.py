@@ -2,13 +2,8 @@ import os
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-import re
-import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
-import cv2
 from moviepy.editor import ImageClip, VideoFileClip
 from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -19,153 +14,14 @@ from video_controller import video_controller
 from video_controller_rotate import video_controller_rotate
 
 
-# Resolve every project path from this file instead of from the process' current
-# working directory.  This keeps the application portable when it is launched
-# from a shortcut, an IDE, or another directory.
-PROJECT_ROOT = Path(__file__).resolve().parent
-YOLO_PROJECT_ROOT = PROJECT_ROOT / "YOLOv8_DeepSORT_Object_Tracking"
-DETECT_DIR = YOLO_PROJECT_ROOT / "ultralytics" / "yolo" / "v8" / "detect"
-DEFAULT_WEIGHTS_DIR = PROJECT_ROOT / "weights"
-RUNTIME_DIR = PROJECT_ROOT / "runtime"
-PREVIEW_IMAGE_PATH = RUNTIME_DIR / "preview.jpg"
+from detection_backend import (
+    PROJECT_ROOT, RUNTIME_DIR, PREVIEW_IMAGE_PATH, MODEL_NAMES,
+    _configured_path, resolve_model_path, resolve_reid_checkpoint, run_detection,
+)
 
-MODEL_NAMES = ("yolov8s", "yolov8l", "yolov8x6")
-TASKS = {
-    "tf": {"script": "predict_tf.py", "weight_suffix": "_tf.pt"},
-    "zebra": {"script": "predict_zebra.py", "weight_suffix": "_zebra.pt"},
-}
-
-# These are intentionally kept as user-selectable paths.  The video files are
-# selected in the GUI and model assets can be placed in the repository's
-# weights/ directory or configured through environment variables.
 videos_path = []
 folder_path = ""
 rotate_angle = 0
-
-
-def _configured_path(value, base=PROJECT_ROOT):
-    """Return an absolute path for a config value.
-
-    Relative values in environment variables are interpreted relative to the
-    repository root, not relative to whichever directory launched the GUI.
-    """
-
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = base / path
-    return path.resolve()
-
-
-def _weights_dir():
-    return _configured_path(os.environ.get("YOLO_WEIGHTS_DIR", DEFAULT_WEIGHTS_DIR))
-
-
-def resolve_model_path(model_name, task):
-    """Resolve and validate the YOLO weights required by a detection task."""
-
-    task_config = TASKS[task]
-    env_name = f"YOLO_{task.upper()}_MODEL"
-    configured_model = os.environ.get(env_name)
-    if configured_model:
-        model_path = _configured_path(configured_model)
-    else:
-        filename = f"{model_name}{task_config['weight_suffix']}"
-        model_path = _weights_dir() / filename
-
-    if not model_path.is_file():
-        expected_name = f"{model_name}{task_config['weight_suffix']}"
-        raise FileNotFoundError(
-            "找不到 YOLO 模型權重："
-            f"{model_path}\n"
-            f"請將 {expected_name} 放到 {_weights_dir()}，"
-            f"或設定環境變數 {env_name} 指向權重檔案。"
-        )
-    return model_path
-
-
-def resolve_reid_checkpoint():
-    """Resolve the DeepSORT appearance-model checkpoint."""
-
-    candidates = []
-    configured_checkpoint = os.environ.get("DEEPSORT_REID_CKPT")
-    if configured_checkpoint:
-        candidates.append(_configured_path(configured_checkpoint))
-
-    candidates.extend(
-        (
-            _weights_dir() / "ckpt.t7",
-            DETECT_DIR
-            / "deep_sort_pytorch"
-            / "deep_sort"
-            / "deep"
-            / "checkpoint"
-            / "ckpt.t7",
-        )
-    )
-
-    for checkpoint in candidates:
-        if checkpoint.is_file():
-            return checkpoint
-
-    locations = "\n".join(f"- {path}" for path in candidates)
-    raise FileNotFoundError(
-        "找不到 DeepSORT 權重 ckpt.t7。請將檔案放到 weights/ckpt.t7、"
-        "原本的 DeepSORT checkpoint 位置，或設定 DEEPSORT_REID_CKPT。"
-        f"\n已檢查：\n{locations}"
-    )
-
-
-def _hydra_path(path):
-    """Use a platform-independent path representation in Hydra overrides."""
-
-    return path.resolve().as_posix()
-
-
-def _hydra_value(value):
-    """Quote a Hydra value so paths containing spaces remain one override."""
-
-    if isinstance(value, Path):
-        value = _hydra_path(value)
-    value = str(value).replace('"', '\\"')
-    return f'"{value}"'
-
-
-def _subprocess_environment(reid_checkpoint):
-    """Build the environment used by the local YOLO/DeepSORT scripts."""
-
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "QT_DEBUG_PLUGINS": "1",
-            "KMP_DUPLICATE_LIB_OK": "1",
-            "HYDRA_FULL_ERROR": "1",
-            "PYTHONUNBUFFERED": "1",
-            "DEEPSORT_REID_CKPT": str(reid_checkpoint),
-        }
-    )
-
-    # The scripts live below the local ultralytics package and also import the
-    # sibling deep_sort_pytorch package.  Set both entries explicitly so an
-    # installed ultralytics package cannot accidentally shadow this checkout.
-    python_path = [str(YOLO_PROJECT_ROOT), str(DETECT_DIR)]
-    if environment.get("PYTHONPATH"):
-        python_path.append(environment["PYTHONPATH"])
-    environment["PYTHONPATH"] = os.pathsep.join(python_path)
-    return environment
-
-
-def _video_width(video_path):
-    capture = cv2.VideoCapture(str(video_path))
-    try:
-        if not capture.isOpened():
-            raise ValueError(f"無法開啟影片：{video_path}")
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-    finally:
-        capture.release()
-
-    if width <= 0:
-        raise ValueError(f"無法讀取影片寬度：{video_path}")
-    return width
 
 
 class DetectionThread(QThread):
@@ -194,98 +50,17 @@ class DetectionThread(QThread):
         self._run_detection()
 
     def _run_detection(self):
-        global folder_path, rotate_angle, videos_path
-
-        if not videos_path:
-            raise ValueError("尚未選擇要偵測的影片。")
-        if not folder_path:
-            raise ValueError("尚未選擇輸出資料夾。")
-
         model_index = self.ui.comboBox.currentIndex()
-        if not 0 <= model_index < len(MODEL_NAMES):
-            model_index = 0
-        model_path = resolve_model_path(MODEL_NAMES[model_index], self.task)
-        reid_checkpoint = resolve_reid_checkpoint()
-
-        output_dir = _configured_path(folder_path)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        task_config = TASKS[self.task]
-        script_path = DETECT_DIR / task_config["script"]
-        if not script_path.is_file():
-            raise FileNotFoundError(f"找不到偵測腳本：{script_path}")
-
-        environment = _subprocess_environment(reid_checkpoint)
-        selected_videos = list(videos_path)
-
-        for index, selected_video in enumerate(selected_videos):
-            if self.mainWindow.isHidden():
-                return
-
-            video_path = _configured_path(selected_video)
-            if not video_path.is_file():
-                raise FileNotFoundError(f"找不到影片：{video_path}")
-
-            width = _video_width(video_path)
-
-            # A rotated source is temporary and is removed after the child
-            # process exits.  It never pollutes the selected output directory.
-            with tempfile.TemporaryDirectory(prefix="traffic_yolo_rotate_") as temporary_dir:
-                source_path = video_path
-                if rotate_angle:
-                    source_path = Path(temporary_dir) / "rotated.mp4"
-                    clip = VideoFileClip(str(video_path))
-                    rotated_clip = clip.rotate(rotate_angle)
-                    try:
-                        rotated_clip.write_videofile(str(source_path))
-                    finally:
-                        rotated_clip.close()
-                        clip.close()
-
-                command = [
-                    sys.executable,
-                    str(script_path),
-                    f"model={_hydra_value(model_path)}",
-                    f"source={_hydra_value(source_path)}",
-                    f"project={_hydra_value(output_dir)}",
-                    f"name={_hydra_value(video_path.name)}",
-                    f"imgsz={width}",
-                    "conf=0.7",
-                    "iou=0.3",
-                    "augment=True",
-                    "half=True",
-                ]
-
-                print("Running:", " ".join(command))
-                process = subprocess.Popen(
-                    command,
-                    cwd=str(DETECT_DIR),
-                    env=environment,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="ignore",
-                )
-                self.mainWindow.process = process
-                try:
-                    for line in process.stdout:
-                        print(line, end="")
-                        progress_match = re.search(r"\((\d+)/(\d+)\)", line)
-                        if progress_match:
-                            current, total = progress_match.groups()
-                            self.progress_signal.emit(
-                                index, int(current), int(total), line.strip()
-                            )
-                    return_code = process.wait()
-                finally:
-                    self.mainWindow.process = None
-
-                if return_code != 0:
-                    raise RuntimeError(
-                        f"偵測腳本執行失敗（return code {return_code}）：{video_path.name}"
-                    )
-
-        self.finished_signal.emit(len(selected_videos) - 1)
+        model_index = model_index if 0 <= model_index < len(MODEL_NAMES) else 0
+        for event in run_detection(
+            videos_path, folder_path, MODEL_NAMES[model_index], self.task, rotate_angle,
+            cancelled=self.mainWindow.isHidden,
+            on_process=lambda process: setattr(self.mainWindow, "process", process),
+        ):
+            if event["type"] == "progress":
+                self.progress_signal.emit(event["index"], event["current"], event["total"], event["message"])
+            elif event["type"] == "done":
+                self.finished_signal.emit(len(videos_path) - 1)
 
 
 class ThreadTask_tf(DetectionThread):
