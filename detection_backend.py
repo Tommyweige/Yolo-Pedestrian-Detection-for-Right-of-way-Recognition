@@ -153,7 +153,27 @@ def _video_width(video_path):
 
 def run_detection(videos, output, model, task, angle=0, cancelled=lambda: False,
                   on_process=lambda process: None):
-    """Yield progress events while running the existing prediction scripts."""
+    """Run traffic prediction scripts and stream desktop protocol events.
+
+    Args:
+        videos: Input video paths, resolved relative to the project root.
+        output: Existing directory for detector outputs.
+        model: One of MODEL_NAMES.
+        task: Detection mode, 'tf' or 'zebra'.
+        angle: Rotation in degrees, between -45 and 45.
+        cancelled: Callback that requests cancellation when it returns true.
+        on_process: Callback receiving the prediction child, then None on release.
+
+    Yields:
+        Dictionaries with type 'progress', 'cancelled', or 'done'. Progress
+        carries index, current, total and message; clip completion advances
+        index and sets current=total=1. Cancellation is checked after rotation.
+
+    Raises:
+        ValueError: Invalid mode, rotation, output directory or video metadata.
+        FileNotFoundError: A required video, script or checkpoint is missing.
+        RuntimeError: The prediction child exits with a nonzero status.
+    """
     if task not in TASKS or model not in MODEL_NAMES:
         raise ValueError("未知的偵測模式或模型。")
     if not math.isfinite(angle) or not -45 <= angle <= 45:

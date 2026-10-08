@@ -23,6 +23,7 @@ from deep_sort_pytorch.utils.parser import get_config
 from deep_sort_pytorch.deep_sort import DeepSort
 from collections import deque
 import numpy as np
+from traffic_events import event_timestamp, discard_expired_tracks
 
 DETECT_DIR = Path(__file__).resolve().parent
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
@@ -33,7 +34,6 @@ deepsort = None
 object_counter = {}
 object_counter1 = {}
 log_flag = False
-fcount = 0
 save_path = ''
 
 line = []
@@ -180,7 +180,7 @@ def draw_boxes(img, bbox, names,object_id, identities=None, offset=(0, 0)):
       if key not in identities:
         data_deque.pop(key)
     line.clear()
-    zone = [0,0,0,0]
+    zones = []
     pcount = 0
     for i, box in enumerate(bbox):      #找出斑馬線範圍(zone)
         x1, y1, x2, y2 = [int(i) for i in box]
@@ -190,7 +190,7 @@ def draw_boxes(img, bbox, names,object_id, identities=None, offset=(0, 0)):
         y2 += offset[1]
         obj_name = names[object_id[i]]
         if obj_name == "zebra":
-            zone = [x1, y1, x2, y2]
+            zones.append((x1, y1, x2, y2))
     for i, box in enumerate(bbox):      #行人腳下判定線
         x1, y1, x2, y2 = [int(i) for i in box]
         x1 += offset[0]
@@ -208,7 +208,8 @@ def draw_boxes(img, bbox, names,object_id, identities=None, offset=(0, 0)):
                     direc[id]='R'
                 else:
                     direc[id]='L'
-            if (zone[0]<=center_x<=zone[2])&(zone[1]<=y2<=zone[3]):
+            if any(zx1 <= center_x <= zx2 and zy1 <= y2 <= zy2
+                   for zx1, zy1, zx2, zy2 in zones):
                 if direc[id]=='R':      #行人向右
                     line_t[0]=(x1,y2)
                     line_t[1]=(x2+((x2-x1)*6),y2)
@@ -334,8 +335,6 @@ class DetectionPredictor(BasePredictor):
 
         det = preds[idx]
         all_outputs.append(det)
-        if len(det) == 0:
-            return log_string
         for c in det[:, 5].unique():
             n = (det[:, 5] == c).sum()  # detections per class
             log_string += f"{n} {self.model.names[int(c)]}{'s' * (n > 1)}, "
@@ -351,10 +350,13 @@ class DetectionPredictor(BasePredictor):
             xywh_bboxs.append(xywh_obj)
             confs.append([conf.item()])
             oids.append(int(cls))
-        xywhs = torch.Tensor(xywh_bboxs)
+        xywhs = torch.Tensor(xywh_bboxs).reshape(-1, 4)
         confss = torch.Tensor(confs)
           
         outputs = deepsort.update(xywhs, confss, oids, im0)
+        discard_expired_tracks(deepsort.active_ids, data_deque, direc)
+        if len(det) == 0:
+            return log_string
         if len(outputs) > 0:
             bbox_xyxy = outputs[:, :4]
             identities = outputs[:, -2]
@@ -362,15 +364,12 @@ class DetectionPredictor(BasePredictor):
             
             draw_boxes(im0, bbox_xyxy, self.model.names, object_id,identities)
 
-        global fcount
         global log_flag
-        timeflag =str(int(fcount/30))+' sec '
-        frameflag = '第'+str(fcount%30)+'幀,'
         if log_flag==True:
-            with open(txt_path, "a") as file:
-                file.write(timeflag+frameflag+' 偵測到違規。\n')
+            timeflag = event_timestamp(frame, self.dataset, self.webcam, idx)
+            with open(txt_path, "a", encoding="utf-8") as file:
+                file.write(timeflag+' 偵測到違規。\n')
             log_flag = False
-        fcount+=1
 
         return log_string
 

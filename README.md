@@ -173,11 +173,16 @@ python start.py
 cargo check --manifest-path rust-ui/Cargo.toml
 cargo test --manifest-path rust-ui/Cargo.toml
 python test_desktop_bridge.py
+python test_traffic_rules.py
 pwsh -File rust-ui/check-ui.ps1 -Python python
 ```
 
 Python 檢查會建立臨時影片與替代預測腳本，驗證偵測轉檔、中文／空白路徑、
 進度、子程序錯誤、取消與缺少權重提示，無須模型權重；這不代表已驗證真實模型推論。
+`test_traffic_rules.py` 另以已知偵測框輸入生產用每幀入口，使用真實 DeepSORT，
+檢查燈號色彩、事件時間、空白影格追蹤與斑馬線順序。這個檢查需要可信的 `ckpt.t7`，
+沿用 `weights/` 與環境變數設定；不使用 YOLO 推論或假造追蹤器。
+事件紀錄為 UTF-8，來源第 1 幀對應 0 秒，使用來源 fps 記錄毫秒精度的秒數及來源幀號。
 `check-ui.ps1` 僅用 Python 產生測試素材；執行 Rust 視窗時會指定不存在的 Python 路徑，
 確認預覽可以獨立運作。它會開啟六種實際介面狀態，檢查程序正常退出與截圖更新，
 將空白畫面、影片預覽、播放至最後影格、原生資料夾選擇期間播放、深色旋轉校正與小視窗截圖
