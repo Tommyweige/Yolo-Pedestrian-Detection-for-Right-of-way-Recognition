@@ -6,7 +6,6 @@ import argparse
 import time
 import os
 from pathlib import Path
-from PIL import Image
 
 import cv2
 import torch
@@ -23,6 +22,9 @@ from deep_sort_pytorch.utils.parser import get_config
 from deep_sort_pytorch.deep_sort import DeepSort
 from collections import deque
 import numpy as np
+from traffic_events import event_timestamp, discard_expired_tracks
+
+DETECT_DIR = Path(__file__).resolve().parent
 palette = (2 ** 11 - 1, 2 ** 15 - 1, 2 ** 20 - 1)
 data_deque = {}
 
@@ -31,20 +33,29 @@ deepsort = None
 object_counter = {}
 object_counter1 = {}
 log_flag = False
-fcount = 0
 save_path = ''
 
 line = [(0, 0), (0, 0)]
 def init_tracker():
     global deepsort
     cfg_deep = get_config()
-    cfg_deep.merge_from_file("deep_sort_pytorch/configs/deep_sort.yaml")
+    deep_sort_config = DETECT_DIR / "deep_sort_pytorch" / "configs" / "deep_sort.yaml"
+    cfg_deep.merge_from_file(str(deep_sort_config))
 
-    deepsort= DeepSort(cfg_deep.DEEPSORT.REID_CKPT,
+    reid_checkpoint = Path(
+        os.environ.get("DEEPSORT_REID_CKPT", cfg_deep.DEEPSORT.REID_CKPT)
+    ).expanduser()
+    if not reid_checkpoint.is_absolute():
+        reid_checkpoint = DETECT_DIR / reid_checkpoint
+    reid_checkpoint = reid_checkpoint.resolve()
+    if not reid_checkpoint.is_file():
+        raise FileNotFoundError(f"DeepSORT checkpoint not found: {reid_checkpoint}")
+
+    deepsort= DeepSort(str(reid_checkpoint),
                             max_dist=cfg_deep.DEEPSORT.MAX_DIST, min_confidence=cfg_deep.DEEPSORT.MIN_CONFIDENCE,
                             nms_max_overlap=cfg_deep.DEEPSORT.NMS_MAX_OVERLAP, max_iou_distance=cfg_deep.DEEPSORT.MAX_IOU_DISTANCE,
                             max_age=cfg_deep.DEEPSORT.MAX_AGE, n_init=cfg_deep.DEEPSORT.N_INIT, nn_budget=cfg_deep.DEEPSORT.NN_BUDGET,
-                            use_cuda=True)
+                            use_cuda=torch.cuda.is_available())
 ##########################################################################################
 def xyxy_to_xywh(*xyxy):
     """" Calculates the relative bounding box from absolute pixel values. """
@@ -273,7 +284,7 @@ def detect_red_and_yellow(img, Threshold=0.05):
     """
     desired_dim = (90,30)  # width, height
     img = cv2.resize(np.array(img), desired_dim, interpolation=cv2.INTER_LINEAR)
-    img_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
     # lower mask (0-10)
     lower_red = np.array([0, 70, 50])
@@ -301,8 +312,7 @@ def detect_red_and_yellow(img, Threshold=0.05):
     else:
         return True
 def read_traffic_lights_object(img, x1, y1, x2, y2):
-    image = Image.fromarray(img)          
-    crop_img = image.crop((x1, y1, x2, y2))
+    crop_img = img[y1:y2, x1:x2]
     stop_flag = detect_red_and_yellow(crop_img)
 
     return stop_flag
@@ -356,8 +366,6 @@ class DetectionPredictor(BasePredictor):
 
         det = preds[idx]
         all_outputs.append(det)
-        if len(det) == 0:
-            return log_string
         for c in det[:, 5].unique():
             n = (det[:, 5] == c).sum()  # detections per class
             log_string += f"{n} {self.model.names[int(c)]}{'s' * (n > 1)}, "
@@ -373,10 +381,13 @@ class DetectionPredictor(BasePredictor):
             xywh_bboxs.append(xywh_obj)
             confs.append([conf.item()])
             oids.append(int(cls))
-        xywhs = torch.Tensor(xywh_bboxs)
+        xywhs = torch.Tensor(xywh_bboxs).reshape(-1, 4)
         confss = torch.Tensor(confs)
           
         outputs = deepsort.update(xywhs, confss, oids, im0)
+        discard_expired_tracks(deepsort.active_ids, data_deque)
+        if len(det) == 0:
+            return log_string
         if len(outputs) > 0:
             bbox_xyxy = outputs[:, :4]
             identities = outputs[:, -2]
@@ -384,14 +395,12 @@ class DetectionPredictor(BasePredictor):
             
             draw_boxes(im0, bbox_xyxy, self.model.names, object_id,identities)
 
-        global fcount
         global log_flag
-        timeflag =str(int(fcount/30))+' sec,'
         if log_flag==True:
-            with open(txt_path, "a") as file:
+            timeflag = event_timestamp(frame, self.dataset, self.webcam, idx)
+            with open(txt_path, "a", encoding="utf-8") as file:
                 file.write(timeflag+' 偵測到違規。\n')
             log_flag = False
-        fcount+=1
 
         return log_string
 

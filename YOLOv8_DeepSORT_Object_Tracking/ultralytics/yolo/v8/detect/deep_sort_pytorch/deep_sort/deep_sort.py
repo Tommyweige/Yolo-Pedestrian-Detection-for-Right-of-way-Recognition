@@ -91,6 +91,10 @@ class DeepSort(object):
     def increment_ages(self):
         self.tracker.increment_ages()
 
+    @property
+    def active_ids(self):
+        return {track.track_id for track in self.tracker.tracks}
+
     def _xyxy_to_tlwh(self, bbox_xyxy):
         x1, y1, x2, y2 = bbox_xyxy
 

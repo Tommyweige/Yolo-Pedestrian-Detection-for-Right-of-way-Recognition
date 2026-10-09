@@ -1,0 +1,14 @@
+# Local model assets are required at runtime but should not be committed.
+weights/*.pt
+weights/*.pth
+weights/*.t7
+weights/*.onnx
+weights/*.engine
+
+# Python bytecode.
+__pycache__/
+*.py[cod]
+
+# Runtime previews and temporary files.
+runtime/
+rust-ui/target/
