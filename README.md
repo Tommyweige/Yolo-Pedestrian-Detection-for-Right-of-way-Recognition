@@ -21,27 +21,30 @@
 ### 1. 克隆專案
 首先，請將本專案從 GitHub 克隆到您的本地機器：
 ```bash
-git clone https://github.com/your-repo-link/GUI.git
-cd GUI
+git clone https://github.com/Tommyweige/Yolo-Pedestrian-Detection-for-Right-of-way-Recognition.git
+cd Yolo-Pedestrian-Detection-for-Right-of-way-Recognition
 ```
 
 ### 2. 安裝依賴
-本專案需要 Python 3.9 。建議使用虛擬環境來管理依賴。
+目前驗證的組合是 **Windows x64、Python 3.12、CUDA 13.0、RTX 4060 Laptop**。
+請使用明確的 Python 3.12 路徑，建立短路徑的獨立環境；不要直接升級既有 `runtime/detection-env`。
 
-```bash
-# 創建並激活虛擬環境 (Windows)
-python -m venv venv
-.\venv\Scripts\activate
-
-# 創建並激活虛擬環境 (macOS/Linux)
-python3 -m venv venv
-source venv/bin/activate
+```powershell
+$basePython = 'C:\path\to\Python312\python.exe'
+$envRoot = Join-Path $env:USERPROFILE '.venvs\traffic'
+& $basePython scripts/setup_environment.py legacy --env-root $envRoot --locked
+$legacyPython = Join-Path $envRoot 'legacy\Scripts\python.exe'
+& $legacyPython scripts/check_environment.py legacy --require-cuda
+$env:TRAFFIC_PYTHON = $legacyPython
+& $legacyPython start.py
 ```
 
-安裝主專案的依賴：
-```bash
-pip install -r requirements.txt
-```
+`legacy` 固定 Ultralytics 8.0.3、NumPy 1.26.4、MoviePy 1.0.3，保留舊內部 API。
+`labeling` 與 `modern` 是另外兩個環境，不能安裝到 legacy；也不安裝 `autodistill-yolov8`。
+根目錄與 vendored 的 `requirements.txt` 現在都只指向 legacy spec，已移除衝突的 Torch／CPU-index 混寫。
+完整安裝、CUDA／模型 smoke、來源雜湊、授權記錄、Windows 已知限制與回歸結果，見
+[環境隔離指南](docs/environments.md) 與 [Issue #8 驗證報告](docs/environment-validation-2026-10-10.md)。
+本 PR 僅建立環境；資料匯入、自動標註流水線、訓練與新推論 adapter 尚未實作。
 
 ### 3. 準備模型權重與測試影片
 
