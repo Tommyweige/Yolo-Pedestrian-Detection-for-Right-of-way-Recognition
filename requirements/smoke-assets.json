@@ -1,0 +1,24 @@
+{
+  "artifacts": [
+    {
+      "name": "groundingdino_swint_ogc.pth",
+      "url": "https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth",
+      "sha256": "3b3ca2563c77c69f651d7bd133e97139c186df06231157a64c507099c52bc799",
+      "size": 693997677
+    },
+    {
+      "name": "GroundingDINO_SwinT_OGC.py",
+      "url": "https://raw.githubusercontent.com/roboflow/GroundingDINO/34456776903b2cb392885d56c439d5d0527c27e1/groundingdino/config/GroundingDINO_SwinT_OGC.py",
+      "sha256": "172e80017f9395668a9cb5d1b8bd9d061c0e360471c6ed673c83b69bb14399f1",
+      "size": 1006
+    },
+    {
+      "name": "yolo26n.pt",
+      "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt",
+      "sha256": "9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef",
+      "size": 5544453
+    }
+  ],
+  "dino_hf_mirror_revision": "a94c9b567a2a374598f05c584e96798a170c56fb",
+  "bert_base_uncased_revision": "86b5e0934494bd15c9632b12f734a8a67f723594"
+}
