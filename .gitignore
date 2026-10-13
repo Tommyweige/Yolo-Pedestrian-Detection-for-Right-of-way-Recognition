@@ -12,3 +12,8 @@ __pycache__/
 # Runtime previews and temporary files.
 runtime/
 rust-ui/target/
+
+# Datasets, private media and secrets.
+datasets/
+.env
+*.key
