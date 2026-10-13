@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-COCO_KINDS = {0: "person", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+KIND_NAMES = ("person", "car", "motorcycle", "bus", "truck")  # class ids are looked up by NAME per model
 SCALE = 0.5  # features are matched on a half-size image
 
 
@@ -82,9 +82,10 @@ def main(argv=None):
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     capture.release()
     model = YOLO(args.weights)
+    kinds = {i: n for i, n in model.names.items() if n in KIND_NAMES}  # COCO-80 and our 7-class models differ in ids
     tracks, steps, failures, previous = {}, {}, [], None
     stream = model.track(source=args.video, stream=True, tracker="bytetrack.yaml", persist=True,
-                         classes=list(COCO_KINDS), conf=args.conf, imgsz=args.imgsz, device=args.device,
+                         classes=list(kinds), conf=args.conf, imgsz=args.imgsz, device=args.device,
                          half=args.device != "cpu", verbose=False)
     for index, result in enumerate(stream):
         frame = index + 1  # one-based, same as the legacy event timestamps
@@ -105,7 +106,7 @@ def main(argv=None):
         previous = current
         for identity, box, cls in zip(ids, xyxy, classes):
             foot = [float((box[0] + box[2]) / 2), float(box[3])]
-            tracks.setdefault(identity, {"id": identity, "kind": COCO_KINDS[cls], "raw": []})["raw"].append([frame, *foot])
+            tracks.setdefault(identity, {"id": identity, "kind": kinds[cls], "raw": []})["raw"].append([frame, *foot])
 
     # Chain frame->previous homographies into frame->reference, then map every foot point.
     if not 1 <= args.reference_frame <= max(steps, default=1):
