@@ -1,0 +1,19 @@
+{
+  "classes": ["person", "car", "motorcycle", "bus", "truck", "traffic light", "zebra"],
+  "prompts": {
+    "person": ["pedestrian", "person walking"],
+    "car": ["car"],
+    "motorcycle": ["motorcycle", "scooter"],
+    "bus": ["bus"],
+    "truck": ["truck"],
+    "traffic light": ["traffic light"],
+    "zebra": ["zebra crossing", "crosswalk"]
+  },
+  "box_threshold": 0.30,
+  "text_threshold": 0.25,
+  "nms_iou": 0.6,
+  "review_score_below": 0.45,
+  "small_object_height_px": 32,
+  "edge_tolerance_px": 2,
+  "notes": "Teacher output is pseudo-label, never ground truth. 'zebra' boxes may cover only white stripes; traffic-light colour is decided by separate downstream logic."
+}
