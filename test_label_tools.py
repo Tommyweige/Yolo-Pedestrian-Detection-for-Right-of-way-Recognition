@@ -1,4 +1,4 @@
-"""Labeling store and evaluation behaviour (no window, no GPU)."""
+"""Evaluation behaviour for human event labels (the labeling store itself is tested in rust-ui/src/labels.rs)."""
 import json
 from pathlib import Path
 import subprocess
@@ -9,58 +9,8 @@ import unittest
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from eval_events import aggregate, score  # noqa: E402
-from label_events import FAILURE, YIELDED, LabelStore, time_of  # noqa: E402
 
-
-def lines(path):
-    return [json.loads(l) for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
-
-
-class LabelStoreTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.path = Path(self.temp.name) / "labels.jsonl"
-
-    def tearDown(self):
-        self.temp.cleanup()
-
-    def test_time_uses_one_based_frame_over_fps_like_the_pipeline(self):
-        self.assertEqual(time_of(660, 60.0), 11.0)   # the detected taxi event: f660 -> 11.0 s
-        self.assertEqual(time_of(1, 30.0), 0.033)
-
-    def test_marks_are_saved_immediately_sorted_and_undoable(self):
-        store = LabelStore(self.path, "a.mp4", 60.0)
-        store.add(FAILURE, 660)
-        store.add(YIELDED, 300)
-        self.assertEqual([r["frame"] for r in lines(self.path)], [300, 660])
-        self.assertEqual(store.undo()["frame"], 300)  # undo removes the last mark made, not the last in time
-        self.assertEqual([r["kind"] for r in lines(self.path)], [FAILURE])
-        self.assertEqual(lines(self.path)[0]["time_s"], 11.0)
-
-    def test_resumes_from_an_existing_file(self):
-        LabelStore(self.path, "a.mp4", 60.0).add(FAILURE, 660)
-        again = LabelStore(self.path, "a.mp4", 60.0)
-        self.assertEqual(len(again.rows), 1)
-        again.add(FAILURE, 900)
-        self.assertEqual(len(lines(self.path)), 2)
-
-    def test_one_file_per_video(self):
-        LabelStore(self.path, "a.mp4", 60.0).add(FAILURE, 660)
-        with self.assertRaises(ValueError):
-            LabelStore(self.path, "b.mp4", 30.0)
-
-    def test_nothing_is_written_until_something_is_decided(self):
-        store = LabelStore(self.path, "a.mp4", 60.0)
-        store.save()
-        self.assertFalse(self.path.exists())
-        self.assertTrue(store.declare_none())
-        self.assertEqual(self.path.read_text(), "")  # empty file = reviewed, no events
-
-    def test_declaring_no_events_cannot_wipe_existing_marks(self):
-        store = LabelStore(self.path, "a.mp4", 60.0)
-        store.add(FAILURE, 660)
-        self.assertFalse(store.declare_none())
-        self.assertEqual(len(lines(self.path)), 1)
+FAILURE = "suspected_failure_to_yield"
 
 
 class EvaluationTests(unittest.TestCase):
