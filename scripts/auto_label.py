@@ -86,6 +86,19 @@ def validate_box(box, width, height, tolerance):
     return [x1, y1, x2, y2], None
 
 
+def class_filter_reason(box, class_id, width, height, ontology):
+    """Reject boxes whose shape is implausible for their class (e.g. a 'zebra' box covering the whole road)."""
+    limits = ontology.get("class_filters", {}).get(ontology["classes"][class_id])
+    if not limits:
+        return None
+    w, h = box[2] - box[0], box[3] - box[1]
+    if w * h / (width * height) > limits.get("max_area_frac", 1.0):
+        return "class_filter_area"
+    if w / h < limits.get("min_aspect", 0.0):
+        return "class_filter_aspect"
+    return None
+
+
 def iou(a, b):
     ix, iy = max(0, min(a[2], b[2]) - max(a[0], b[0])), max(0, min(a[3], b[3]) - max(a[1], b[1]))
     inter = ix * iy
@@ -128,6 +141,8 @@ def process_image(teacher, ontology, image_path, row):
             filtered.append({**record, "reason": "below_box_threshold"})
         else:
             box, reason = validate_box(item.get("box", []), width, height, ontology["edge_tolerance_px"])
+            if box is not None:
+                reason = class_filter_reason(box, class_id, width, height, ontology)
             if reason:
                 filtered.append({**record, "reason": reason})
             else:
@@ -165,6 +180,7 @@ def parse_args(argv):
     parser.add_argument("--splits", nargs="*", default=["train"], help="splits to label (default: train only)")
     parser.add_argument("--dry-run", type=int, metavar="N", help="label only a seeded random sample of N images")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--reverse", action="store_true", help="process in reverse order (a second worker can meet the first in the middle)")
     parser.add_argument("--retry-failed", action="store_true", help="re-run images whose earlier attempt errored")
     args = parser.parse_args(argv)
     if args.teacher == "stub" and not args.stub_file:
@@ -199,7 +215,7 @@ def main(argv=None):
     zero = small = filtered_total = processed = resumed = 0
     scores = []
     filtered_reasons = {}
-    for row in sorted(rows, key=lambda r: r["image_id"]):
+    for row in sorted(rows, key=lambda r: r["image_id"], reverse=args.reverse):
         sidecar_path = output / "sidecars" / f"{row['image_id']}.json"
         label_path = output / "labels" / f"{row['image_id']}.txt"
         previous = json.loads(sidecar_path.read_text(encoding="utf-8")) if sidecar_path.is_file() else None

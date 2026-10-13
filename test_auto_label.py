@@ -44,7 +44,7 @@ class AutoLabel(unittest.TestCase):
                 {"prompt": "pedestrian", "score": 0.5, "box": [11, 11, 50, 90]},   # NMS duplicate
                 {"prompt": "car", "score": 0.4, "box": [60, 40, 190, 95]},         # low confidence, kept
                 {"prompt": "scooter", "score": 0.8, "box": [100, 5, 106, 20]},      # tiny, must be kept
-                {"prompt": "zebra crossing", "score": 0.7, "box": [0, 60, 200, 100]},
+                {"prompt": "zebra crossing", "score": 0.7, "box": [0, 60, 110, 93]},
                 {"prompt": "bus", "score": 0.1, "box": [0, 0, 10, 10]},             # below threshold
             ],
             "zero": [],
@@ -115,6 +115,20 @@ class AutoLabel(unittest.TestCase):
         self.label("--dry-run", "2", "--seed", "1")
         self.assertEqual(len(list((self.out / "sidecars").glob("*.json"))), 2)
         self.assertEqual((self.dataset / "manifest.jsonl").read_bytes(), before)
+
+    def test_zebra_shape_filter_drops_road_sized_and_tall_boxes(self):
+        stub = json.loads(self.stub.read_text())
+        stub["zero"] = [
+            {"prompt": "crosswalk", "score": 0.8, "box": [0, 0, 200, 100]},      # whole image
+            {"prompt": "crosswalk", "score": 0.8, "box": [50, 10, 90, 90]},      # tall, not stripe-shaped
+            {"prompt": "crosswalk", "score": 0.8, "box": [20, 70, 120, 90]},     # wide and small: kept
+        ]
+        self.stub.write_text(json.dumps(stub), encoding="utf-8")
+        self.label()
+        label = (self.out / "labels" / "zero.txt").read_text().splitlines()
+        self.assertEqual(len(label), 1)
+        reasons = {f["reason"] for f in json.loads((self.out / "sidecars" / "zero.json").read_text())["filtered"]}
+        self.assertEqual(reasons, {"class_filter_area", "class_filter_aspect"})
 
     def test_requires_manifest_and_separate_output(self):
         self.assertEqual(run("--dataset", self.root, "--output", self.out, "--stub-file", self.stub).returncode, 2)

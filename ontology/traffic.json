@@ -1,19 +1,50 @@
 {
-  "classes": ["person", "car", "motorcycle", "bus", "truck", "traffic light", "zebra"],
+  "classes": [
+    "person",
+    "car",
+    "motorcycle",
+    "bus",
+    "truck",
+    "traffic light",
+    "zebra"
+  ],
   "prompts": {
-    "person": ["pedestrian", "person walking"],
-    "car": ["car"],
-    "motorcycle": ["motorcycle", "scooter"],
-    "bus": ["bus"],
-    "truck": ["truck"],
-    "traffic light": ["traffic light"],
-    "zebra": ["zebra crossing", "crosswalk"]
+    "person": [
+      "pedestrian",
+      "person walking"
+    ],
+    "car": [
+      "car"
+    ],
+    "motorcycle": [
+      "motorcycle",
+      "scooter"
+    ],
+    "bus": [
+      "bus"
+    ],
+    "truck": [
+      "truck"
+    ],
+    "traffic light": [
+      "traffic light"
+    ],
+    "zebra": [
+      "zebra crossing",
+      "crosswalk"
+    ]
   },
-  "box_threshold": 0.30,
+  "box_threshold": 0.3,
   "text_threshold": 0.25,
   "nms_iou": 0.6,
   "review_score_below": 0.45,
   "small_object_height_px": 32,
   "edge_tolerance_px": 2,
-  "notes": "Teacher output is pseudo-label, never ground truth. 'zebra' boxes may cover only white stripes; traffic-light colour is decided by separate downstream logic."
+  "notes": "Teacher output is pseudo-label, never ground truth. 'zebra' boxes may cover only white stripes; traffic-light colour is decided by separate downstream logic. class_filters.zebra was tuned on 421 Roboflow train images and checked on 421 others against human zebra labels: precision 0.35->0.57, recall 0.54->0.47, F1 0.43->0.51 (IoU>=0.5). Still weak; prefer the fine-tuned detector for zebra.",
+  "class_filters": {
+    "zebra": {
+      "max_area_frac": 0.2,
+      "min_aspect": 3.0
+    }
+  }
 }
