@@ -58,7 +58,7 @@ def parse_args(argv):
     parser.add_argument("--video", required=True)
     parser.add_argument("--weights", required=True, help="verified YOLO26 .pt (see docs/environments.md)")
     parser.add_argument("--output", required=True, help="output folder")
-    parser.add_argument("--reference-frame", type=int, required=True, help="frame whose image coordinates are used")
+    parser.add_argument("--reference-frame", type=int, help="stabilise into this frame's coordinates; omit to skip stabilisation (raw tracks only)")
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--crop-bottom", type=float, default=0.2, help="fraction of the image bottom ignored for features")
@@ -95,19 +95,27 @@ def main(argv=None):
         ids = boxes.id.int().tolist() if boxes.id is not None else []
         xyxy = boxes.xyxy.cpu().numpy() if len(boxes) else np.zeros((0, 4))
         classes = boxes.cls.int().tolist() if len(boxes) else []
-        gray = cv2.cvtColor(cv2.resize(result.orig_img, None, fx=SCALE, fy=SCALE), cv2.COLOR_BGR2GRAY)
-        current = (gray, road_features(gray, feature_mask(gray.shape, xyxy, args.crop_bottom, args.road_top)))
-        if previous is not None:
+        if args.reference_frame:
+            gray = cv2.cvtColor(cv2.resize(result.orig_img, None, fx=SCALE, fy=SCALE), cv2.COLOR_BGR2GRAY)
+            current = (gray, road_features(gray, feature_mask(gray.shape, xyxy, args.crop_bottom, args.road_top)))
+        if previous is not None and args.reference_frame:
             matrix, inliers = estimate_step(previous[0], previous[1], gray)
             if matrix is None:
                 failures.append(frame)
                 matrix, inliers = np.eye(3), 0
             steps[frame] = {"H_to_prev": to_full(matrix).tolist(), "inliers": inliers}
-        previous = current
+        if args.reference_frame:
+            previous = current
         for identity, box, cls in zip(ids, xyxy, classes):
             foot = [float((box[0] + box[2]) / 2), float(box[3])]
-            tracks.setdefault(identity, {"id": identity, "kind": kinds[cls], "raw": []})["raw"].append([frame, *foot])
+            entry = tracks.setdefault(identity, {"id": identity, "kind": kinds[cls], "raw": [], "boxes": []})
+            entry["raw"].append([frame, *foot])
+            entry["boxes"].append([frame, *(float(v) for v in box)])  # x1, y1, x2, y2 in source pixels
 
+    if not args.reference_frame:
+        (output / "raw_tracks.json").write_text(json.dumps(list(tracks.values())), encoding="utf-8")
+        print(json.dumps({"tracks": len(tracks), "stabilised": False}))
+        return 0
     # Chain frame->previous homographies into frame->reference, then map every foot point.
     if not 1 <= args.reference_frame <= max(steps, default=1):
         print("--reference-frame is outside the processed frames", file=sys.stderr)
