@@ -1,0 +1,6 @@
+# Separate from the Hydra/BasePredictor legacy runtime.
+torch==2.13.0
+torchvision==0.28.0
+ultralytics==8.4.175
+numpy==2.2.6
+opencv-python==4.12.0.88
