@@ -1,6 +1,7 @@
 """yield_image_rule regressions with synthetic masks and boxes (no GPU)."""
 import unittest
 
+import cv2
 import numpy as np
 
 from yield_image_rule import Params, detect
@@ -100,3 +101,56 @@ class ImageRule(unittest.TestCase):
         self.assertTrue(events[0].needs_review)
         full = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
         self.assertFalse(full[0].needs_review)
+
+
+def src(box):
+    return tuple(v * 3 for v in box)   # mask px -> source px (1920x1080 vs 640x360)
+
+
+def tilted_mask(center, long_side, short_side, degrees):
+    """Filled rectangle whose long axis points along `degrees` (0 = horizontal, 90 = vertical)."""
+    a = np.radians(degrees)
+    u, v = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+    c = np.array(center, float)
+    corners = [c + sx * u * long_side / 2 + sy * v * short_side / 2 for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    m = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(m, [np.round(corners).astype(np.int32)], 1)
+    return m.astype(bool)
+
+
+class TurningCamera(unittest.TestCase):
+    """The crosswalk is no longer horizontal in the image: gaps must be measured along its own axis."""
+
+    def check(self, mask, ped, vehicle):
+        tracks = [track(1, "person", src(ped), range(1, 31)), track(10, "car", src(vehicle), range(1, 31))]
+        return run(tracks, mask=mask)
+
+    def test_vertical_crosswalk_near_pair_is_flagged_and_far_pair_is_not(self):
+        mask = tilted_mask((320, 180), 320, 80, 90)          # 80 wide, 320 tall: pedestrians walk vertically
+        ped = (310, 100, 330, 150)                            # foot (320, 150), 40 px inside the long edges
+        near = (290, 170, 350, 200)                           # 35 px below the pedestrian along the axis
+        far = (290, 290, 350, 320)                            # 170 px away along the axis, same x: old horizontal rule says "close"
+        self.assertEqual(len(self.check(mask, ped, near)), 1)
+        self.assertEqual(self.check(mask, ped, far), [])
+
+    def test_diagonal_crosswalk_pair_along_the_axis_is_flagged(self):
+        mask = tilted_mask((320, 180), 400, 80, 45)
+        ped = (310, 130, 330, 180)                            # foot (320, 180) on the axis centre
+        vehicle = (342, 207, 382, 237)                        # about 60 px along the axis from the pedestrian
+        self.assertEqual(len(self.check(mask, ped, vehicle)), 1)
+        far = (420, 285, 460, 315)                            # about 170 px along the axis
+        self.assertEqual(self.check(mask, ped, far), [])
+
+    def test_axis_follows_the_blob_orientation(self):
+        from yield_image_rule import crosswalk_axis
+        ux, uy = crosswalk_axis(tilted_mask((320, 180), 400, 80, 0))
+        self.assertAlmostEqual(abs(ux), 1.0, places=1)
+        ux, uy = crosswalk_axis(tilted_mask((320, 180), 320, 80, 90))
+        self.assertAlmostEqual(abs(uy), 1.0, places=1)
+        ux, uy = crosswalk_axis(tilted_mask((320, 180), 400, 80, 45))
+        self.assertAlmostEqual(abs(ux), abs(uy), places=1)
+        self.assertEqual(crosswalk_axis(tilted_mask((320, 180), 90, 90, 0)), (1.0, 0.0))  # not elongated: horizontal fallback
+
+
+if __name__ == "__main__":
+    unittest.main()
