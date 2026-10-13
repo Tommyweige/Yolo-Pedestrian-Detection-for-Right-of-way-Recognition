@@ -6,7 +6,8 @@ No torch/ultralytics dependency; detectors and the GUI feed tracks in through an
 World frame (metres), derived from the crosswalk corners:
   x runs ALONG the crosswalk (pedestrians walk along x), y runs ALONG THE ROAD (vehicles drive along y).
   Crosswalk = rectangle [0, length_m] x [0, depth_m]. `vehicle_direction` +1 means vehicles drive toward
-  increasing y, so the stop line is y = 0; -1 means the stop line is y = depth_m.
+  increasing y, so the stop line is y = 0; -1 means the stop line is y = depth_m; 0 (default) infers each
+  vehicle's direction from its own motion along y, so two-way traffic works.
 """
 import argparse
 import json
@@ -35,6 +36,8 @@ class Params:
     max_gap_frames: int = 10          # larger track gaps near the event mark it for review
     min_points: int = 15              # shorter tracks mark the event for review
     evidence_s: float = 3.0           # evidence window before/after the event
+    max_world_m: float = 40.0         # points mapped farther than this from the crosswalk are untrusted
+    max_speed_mps: float = 40.0       # faster than any plausible road user: tracking/stabilisation error
 
 
 def homography(source, destination):
@@ -58,15 +61,15 @@ class Scene:
     crosswalk_image: list      # 4 image corners: A->(0,0), B->(length,0), C->(length,depth), D->(0,depth)
     length_m: float
     depth_m: float
-    vehicle_direction: int = 1
+    vehicle_direction: int = 0
     matrix: np.ndarray = field(init=False, repr=False)
     reprojection_error_px: float = field(init=False)
 
     def __post_init__(self):
         if len(self.crosswalk_image) != 4:
             raise ValueError("crosswalk_image needs exactly 4 corners")
-        if self.vehicle_direction not in (1, -1):
-            raise ValueError("vehicle_direction must be 1 or -1")
+        if self.vehicle_direction not in (1, -1, 0):
+            raise ValueError("vehicle_direction must be 1, -1 or 0 (infer)")
         if self.length_m <= 0 or self.depth_m <= 0:
             raise ValueError("crosswalk size must be positive")
         world = [(0, 0), (self.length_m, 0), (self.length_m, self.depth_m), (0, self.depth_m)]
@@ -80,7 +83,7 @@ class Scene:
     @classmethod
     def from_json(cls, path):
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls(data["crosswalk_image"], data["length_m"], data["depth_m"], data.get("vehicle_direction", 1))
+        return cls(data["crosswalk_image"], data["length_m"], data["depth_m"], data.get("vehicle_direction", 0))
 
     def to_world(self, point):
         return apply_homography(self.matrix, point)
@@ -88,9 +91,9 @@ class Scene:
     def on_crosswalk(self, world):
         return 0 <= world[0] <= self.length_m and 0 <= world[1] <= self.depth_m
 
-    def distance_to_line(self, world):
+    def distance_to_line(self, world, direction):
         """Positive while the vehicle is still before the stop line, <= 0 once it has passed."""
-        return -world[1] if self.vehicle_direction == 1 else world[1] - self.depth_m
+        return -world[1] if direction == 1 else world[1] - self.depth_m
 
 
 @dataclass
@@ -131,8 +134,34 @@ class _World:
 
     def __init__(self, scene, track, params):
         self.track, self.params = track, params
-        self.pos = {f: scene.to_world(p) for f, p in track.points.items()}
+        mapped = {f: scene.to_world(p) for f, p in track.points.items()}
+        self.pos = {f: w for f, w in mapped.items() if self._plausible(scene, w, params)}
         self.frames = sorted(self.pos)
+        self.direction = self._directions(scene.vehicle_direction)
+
+    @staticmethod
+    def _plausible(scene, world, params):
+        """The road-plane model only holds near the crosswalk; far/horizon points blow up."""
+        if not all(math.isfinite(v) for v in world):
+            return False
+        return (-params.max_world_m <= world[0] <= scene.length_m + params.max_world_m
+                and -params.max_world_m <= world[1] <= scene.depth_m + params.max_world_m)
+
+    def _directions(self, fixed):
+        """Per-frame travel direction along y (+1/-1): fixed, else from ~1 s of motion, carried forward."""
+        if fixed:
+            return {f: fixed for f in self.frames}
+        window = max(1, round(1.0 * self.params.fps))
+        result, last = {}, None
+        for f in self.frames:
+            earlier = [g for g in self.frames if window * 0.5 <= f - g <= window * 2]
+            if earlier:
+                base = min(earlier, key=lambda g: abs(f - g - window))
+                dy = self.pos[f][1] - self.pos[base][1]
+                if abs(dy) >= 0.3:
+                    last = 1 if dy > 0 else -1
+            result[f] = last
+        return result
 
     def speed(self, frame):
         window = max(1, round(self.params.speed_window_s * self.params.fps))
@@ -142,7 +171,8 @@ class _World:
         if not earlier:
             return None
         base = min(earlier, key=lambda f: abs(frame - f - window))
-        return math.dist(self.pos[frame], self.pos[base]) * self.params.fps / (frame - base)
+        value = math.dist(self.pos[frame], self.pos[base]) * self.params.fps / (frame - base)
+        return value if value <= self.params.max_speed_mps else None  # implausible: treat as unknown
 
     def lateral_velocity(self, frame):
         """x velocity (m/s) of the pedestrian over the speed window."""
@@ -201,9 +231,12 @@ def detect_events(scene, tracks, params=None):
                     stopped_run = 0
                     continue
                 pf = f if f in ped.pos else max(g for g in range(f - recent, f + 1) if g in ped.pos)
-                v_pos, speed = vehicle.pos[f], vehicle.speed(f)
-                distance = scene.distance_to_line(v_pos)
-                if speed is None or distance > params.approach_range_m:
+                v_pos, speed, heading = vehicle.pos[f], vehicle.speed(f), vehicle.direction[f]
+                if speed is None or heading is None:
+                    stopped_run = 0
+                    continue
+                distance = scene.distance_to_line(v_pos, heading)
+                if distance > params.approach_range_m:
                     stopped_run = 0
                     continue
                 conflict = _in_conflict(v_pos, ped.pos[pf], ped.lateral_velocity(pf), params)
@@ -219,7 +252,7 @@ def detect_events(scene, tracks, params=None):
                     stopped_run = 0
                 prev = vehicle.frames[index - 1] if index else None
                 crossed = (prev is not None and f - prev <= params.max_gap_frames
-                           and scene.distance_to_line(vehicle.pos[prev]) > 0 >= distance)
+                           and scene.distance_to_line(vehicle.pos[prev], heading) > 0 >= distance)
                 if crossed and speed >= params.stop_speed_mps and "suspected_failure_to_yield" not in emitted:
                     emitted.add("suspected_failure_to_yield")
                     events.append(_event("suspected_failure_to_yield", f, vehicle, ped, speed, distance, params))

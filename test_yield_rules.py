@@ -10,7 +10,7 @@ FPS = 30
 PX = 50  # image pixels per metre in the simple scene
 
 
-def simple_scene(direction=1):
+def simple_scene(direction=0):
     corners = [(100, 100), (600, 100), (600, 300), (100, 300)]  # 10 m x 4 m crosswalk
     return Scene(corners, 10.0, 4.0, direction)
 
@@ -84,13 +84,28 @@ class YieldRules(unittest.TestCase):
         events = detect_events(simple_scene(-1), [walker(), straight_vehicle(direction=-1)])
         self.assertEqual([e.kind for e in events], ["suspected_failure_to_yield"])
 
+    def test_inferred_direction_handles_two_way_traffic(self):
+        both = [walker(), straight_vehicle(10), straight_vehicle(11, x=4.0, direction=-1)]
+        events = detect_events(simple_scene(0), both)
+        self.assertEqual(sorted(e.vehicle_id for e in events), [10, 11])
+        self.assertTrue(all(e.kind == "suspected_failure_to_yield" for e in events))
+
+    def test_parked_vehicle_without_motion_never_triggers(self):
+        parked = track(10, "car", {f: (5.0, -3.0) for f in range(0, 181)})
+        self.assertEqual(detect_events(simple_scene(0), [walker(), parked]), [])
+
+    def test_points_far_from_the_crosswalk_are_ignored(self):
+        wild = track(10, "car", {f: (5.0, -300.0 + 10 * f) for f in range(0, 121)})  # 300 m/s: stabilisation blow-up
+        self.assertEqual(detect_events(simple_scene(0), [walker(), wild]), [])
+
     def test_multiple_vehicles_each_get_one_event(self):
         events = detect_events(simple_scene(), [walker(), straight_vehicle(10), straight_vehicle(11, "motorcycle")])
         self.assertEqual(sorted(e.vehicle_id for e in events), [10, 11])
 
     def test_short_track_is_marked_for_review(self):
         short = straight_vehicle(frames=range(50, 63))
-        events = detect_events(simple_scene(), [walker(), short])
+        self.assertEqual(detect_events(simple_scene(0), [walker(), short]), [])  # too short to infer direction
+        events = detect_events(simple_scene(1), [walker(), short])
         self.assertEqual(len(events), 1)
         self.assertTrue(events[0].needs_review)
         self.assertIn("short_track", events[0].review_reasons)
@@ -111,7 +126,7 @@ class YieldRules(unittest.TestCase):
             root = Path(folder)
             (root / "scene.json").write_text(json.dumps({
                 "crosswalk_image": [(100, 100), (600, 100), (600, 300), (100, 300)],
-                "length_m": 10, "depth_m": 4, "vehicle_direction": 1}))
+                "length_m": 10, "depth_m": 4}))
             tracks = [{"id": t.id, "kind": t.kind, "points": [[f, *p] for f, p in t.points.items()]}
                       for t in (walker(), straight_vehicle())]
             (root / "tracks.json").write_text(json.dumps(tracks))
