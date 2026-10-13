@@ -3,7 +3,10 @@
 No camera calibration, speed or stabilisation: works with a moving camera. Inputs per frame are a crosswalk mask
 (from scripts/segment_crosswalk.py) plus person/vehicle boxes with track ids (scripts/track_video.py raw tracks).
 A vehicle "yielding" never enters the crosswalk while a pedestrian is there, so yielding simply produces no event.
-Each event records the pedestrian state (on_crosswalk | waiting_at_edge) so a stricter definition can filter later.
+A pedestrian merely waiting at the edge does not count (user decision). A pedestrian counts when they are on the crosswalk
+(foot at least min_inside_person_heights inside the mask) at some frame within entry_window_s of the contact, so stepping on
+as the vehicle passes is caught while standing still at the edge is not. This uses frames after the contact: offline only.
+--include-waiting disables that filter; each event records the pedestrian state at contact and whether they entered.
 Output is a candidate for review, not a legal finding.
 """
 import argparse
@@ -32,6 +35,10 @@ class Params:
     rider_overlap: float = 0.5              # person box this much inside a vehicle box = rider, not a pedestrian
     band_fraction: float = 0.5              # share of the band below the vehicle that must be crosswalk
     min_track_frames: int = 15
+    min_inside_person_heights: float = 0.1   # foot must be this deep inside the mask: mask edges are noisy, and a person
+                                             # standing right at the edge is waiting (chosen between the two clips' cases 0.03 and 0.25)
+    require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
+    entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk within this window of the contact does
     evidence_s: float = 3.0
 
 
@@ -56,13 +63,14 @@ def is_rider(person, vehicles, params):
     return False
 
 
-def person_state(box, component, distance, params):
-    """'on_crosswalk', 'waiting_at_edge' or None for one person against one crosswalk component."""
+def person_state(box, component, distance, depth, params):
+    """'on_crosswalk', 'waiting_at_edge' or None. distance: to the crosswalk from outside; depth: from the edge inside."""
     x = int(np.clip((box[0] + box[2]) / 2, 0, component.shape[1] - 1))
     y = int(np.clip(box[3], 0, component.shape[0] - 1))
+    height = box[3] - box[1]
     if component[y, x]:
-        return "on_crosswalk"
-    if distance[y, x] <= params.edge_margin_person_heights * (box[3] - box[1]):
+        return "on_crosswalk" if depth[y, x] >= params.min_inside_person_heights * height else "waiting_at_edge"
+    if distance[y, x] <= params.edge_margin_person_heights * height:
         return "waiting_at_edge"
     return None
 
@@ -77,21 +85,26 @@ def vehicle_on(box, component, params):
     return band.size > 0 and band.mean() >= params.band_fraction
 
 
-def frame_pairs(mask, people, vehicles, params):
-    """Yield (vehicle_id, person_id, state) for one frame. Boxes are in mask pixels."""
+def scan_frame(mask, people, vehicles, params):
+    """Return ([(vehicle_id, person_id, state)], {person ids deep on a crosswalk}) for one frame. Boxes in mask pixels."""
     components = crosswalk_components(mask, params)
     vehicle_boxes = [b for _, _, b in vehicles]  # a person inside any vehicle box is a rider/occupant
+    pairs, deep = [], set()
     for component in components:
         distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
-        standing = [(i, b, person_state(b, component, distance, params)) for i, b in people if not is_rider(b, vehicle_boxes, params)]
+        depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
+        standing = [(i, b, person_state(b, component, distance, depth, params)) for i, b in people
+                    if not is_rider(b, vehicle_boxes, params)]
         standing = [s for s in standing if s[2]]
+        deep.update(i for i, _, state in standing if state == "on_crosswalk")
         for vid, kind, vbox in vehicles:
             if not standing or not vehicle_on(vbox, component, params):
                 continue
             vwidth = vbox[2] - vbox[0]
             for pid, pbox, state in standing:
                 if abs((pbox[0] + pbox[2]) / 2 - (vbox[0] + vbox[2]) / 2) <= params.lateral_vehicle_widths * vwidth:
-                    yield vid, pid, state
+                    pairs.append((vid, pid, state))
+    return pairs, deep
 
 
 @dataclass
@@ -103,6 +116,7 @@ class Event:
     vehicle_kind: str
     pedestrian_id: int
     pedestrian_state: str          # state in the first qualifying frame
+    pedestrian_entered_crosswalk: bool  # on the crosswalk at some frame within entry_window_s of the contact
     evidence_frames: tuple
     needs_review: bool
     review_reasons: list
@@ -123,7 +137,8 @@ def detect(mask_at, tracks, params, frames):
             boxes.setdefault(int(f), []).append((t["id"], t["kind"], tuple(b)))
     lengths = {t["id"]: len(t["boxes"]) for t in tracks}
     need = max(1, round(params.min_seconds * params.fps))
-    streak, started, events, done = {}, {}, [], set()
+    window = round(params.entry_window_s * params.fps)
+    streak, started, candidates, done, deep_frames = {}, {}, [], set(), {}
     for f in frames:
         mask = mask_at(f)
         if mask is None:
@@ -133,8 +148,11 @@ def detect(mask_at, tracks, params, frames):
         people = [(i, scaled(b, sx, sy)) for i, k, b in here if k == "person"]
         vehicles = [(i, k, scaled(b, sx, sy)) for i, k, b in here if k in VEHICLE_KINDS]
         kinds = {i: k for i, k, _ in vehicles}
+        pairs, deep = scan_frame(mask, people, vehicles, params)
+        for pid in deep:
+            deep_frames.setdefault(pid, []).append(f)
         current = {}
-        for vid, pid, state in frame_pairs(mask, people, vehicles, params):
+        for vid, pid, state in pairs:
             current.setdefault((vid, pid), state)
         for pair in list(streak):
             if pair not in current:
@@ -142,17 +160,20 @@ def detect(mask_at, tracks, params, frames):
         for pair, state in current.items():
             streak[pair] = streak.get(pair, 0) + 1
             started.setdefault(pair, (f, state))
-            states = started[pair]
             if streak[pair] >= need and pair[0] not in done:
                 done.add(pair[0])
-                window = round(params.evidence_s * params.fps)
-                reasons = []
-                if lengths.get(pair[0], 0) < params.min_track_frames:
-                    reasons.append("short_vehicle_track")
-                events.append(Event("vehicle_on_crosswalk_with_pedestrian", f, round(f / params.fps, 3), pair[0], kinds[pair[0]],
-                                    pair[1], states[1], (max(1, f - window), f + window), bool(reasons), reasons))
+                reasons = ["short_vehicle_track"] if lengths.get(pair[0], 0) < params.min_track_frames else []
+                candidates.append((f, pair, kinds[pair[0]], started[pair][1], reasons))
         for pair in [p for p in started if p not in streak]:
             del started[pair]
+    events = []
+    for f, (vid, pid), kind, state, reasons in candidates:
+        entered = any(abs(g - f) <= window for g in deep_frames.get(pid, []))
+        if params.require_crossing and not entered:
+            continue  # stood at the edge the whole time: waiting, not crossing
+        span = round(params.evidence_s * params.fps)
+        events.append(Event("vehicle_on_crosswalk_with_pedestrian", f, round(f / params.fps, 3), vid, kind, pid, state,
+                            entered, (max(1, f - span), f + span), bool(reasons), reasons))
     return events
 
 
@@ -174,11 +195,13 @@ def main(argv=None):
     parser.add_argument("--masks", required=True, help="masks.npz from segment_crosswalk.py --stride")
     parser.add_argument("--tracks", required=True, help="raw_tracks.json from track_video.py (with boxes)")
     parser.add_argument("--output", required=True, help="events .jsonl")
+    parser.add_argument("--include-waiting", action="store_true", help="also report pedestrians who only waited at the edge (disables the crossing filter)")
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
     args = parser.parse_args(argv)
-    params = Params(fps=args.fps, src_size=(args.width, args.height))
+    params = Params(fps=args.fps, src_size=(args.width, args.height),
+                    require_crossing=not args.include_waiting)
     mask_at, _ = load_mask_provider(args.masks)
     tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
     last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)

@@ -46,10 +46,25 @@ class ImageRule(unittest.TestCase):
     def test_vehicle_stopped_before_the_crosswalk_is_not_flagged(self):
         self.assertEqual(run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_BEFORE, range(1, 31))]), [])
 
-    def test_pedestrian_waiting_at_edge_is_reported_with_that_state(self):
+    def test_pedestrian_waiting_above_the_edge_does_not_count_by_default(self):
         waiting = (1230, 480, 1290, 585)  # foot at mask row 195: 5 px above the crosswalk top edge (row 200)
-        events = run([track(1, "person", waiting, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
-        self.assertEqual([e.pedestrian_state for e in events], ["waiting_at_edge"])
+        tracks = [track(1, "person", waiting, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
+        self.assertEqual(run(tracks), [])
+        events = run(tracks, params=Params(fps=60.0, src_size=SRC, min_seconds=0.1, require_crossing=False))
+        self.assertEqual([(e.pedestrian_state, e.pedestrian_entered_crosswalk) for e in events], [("waiting_at_edge", False)])
+
+    def test_pedestrian_standing_right_at_the_inside_edge_is_waiting_not_crossing(self):
+        shallow = (1230, 303, 1290, 603)   # foot mask row 201: 2 px inside the top edge; person 100 px tall -> depth 0.02
+        tracks = [track(1, "person", shallow, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
+        self.assertEqual(run(tracks), [])
+
+    def test_pedestrian_stepping_onto_the_crosswalk_as_the_vehicle_passes_counts(self):
+        steps = {"id": 1, "kind": "person", "boxes":
+                 [[f, 1230, 303, 1290, 603] for f in range(1, 16)] + [[f, 1230, 450, 1290, 750] for f in range(16, 31)]}  # foot row 201 -> 250
+        events = run([steps, track(10, "car", CAR_ON, range(1, 31))])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].pedestrian_state, "waiting_at_edge")   # state at first contact
+        self.assertTrue(events[0].pedestrian_entered_crosswalk)
 
     def test_pedestrian_far_from_the_crosswalk_is_ignored(self):
         far = (900, 20, 940, 110)        # foot far above the crosswalk, farther than 0.8 person heights

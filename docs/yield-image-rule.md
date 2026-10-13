@@ -18,13 +18,17 @@ Mapillary Vistas is CC BY-NC-SA: research/demo use only.
 
 Event = a vehicle whose bottom edge is on the same crosswalk blob as a pedestrian (foot on it, or within 0.8 person heights of its
 edge), horizontal gap <= 1.5 vehicle widths, for >= 0.2 s; motorcycle riders/occupants (person box inside a vehicle box) are
-excluded; one event per vehicle track. `pedestrian_state` (on_crosswalk | waiting_at_edge) is stored so a stricter definition can
-filter without re-running. The definition of "failure to yield" (does a pedestrian merely waiting count?) is still the user's call.
+excluded; one event per vehicle track.
+**Definition (user decision, 2026-10-13): a pedestrian merely waiting at the edge does not count.** A pedestrian counts only if
+their foot is at least 0.1 person heights inside the crosswalk mask at some frame within 1 s of the contact, so stepping onto the
+crosswalk as a vehicle passes counts and standing still at the edge does not. (Image motion cannot be used: the camera moves.)
+This looks at frames after the contact, so it is an offline review tool. `--include-waiting` disables the filter. The 0.1 threshold
+was chosen between the only two pedestrians seen (0.03 and 0.25 person heights deep): thin evidence, to be revisited with more clips.
 
 ## Real-video result (helmet-cam night clip, 900 frames, 60 fps) — NOT a measured accuracy
 - Near-crosswalk segmentation found the crosswalk in all 18 visually checked frames (even with vehicles/pedestrians occluding).
-- 2 candidate events: f660 (11.0 s): a taxi drives across the crosswalk as the pedestrian steps onto its left end (matches the clip's
-  topic). f352 (5.87 s): a white SUV (detected as "truck") crosses while the pedestrian stands at the left end of the crosswalk; whether
-  that is a violation depends on the definition above and on the mask edge there.
+- With the user's definition: 1 event, f660 (11.0 s): a taxi drives across the crosswalk as the pedestrian steps onto its left end.
+- With `--include-waiting`: also f352 (5.87 s): a white SUV (detected as "truck") crosses while the pedestrian stands motionless
+  at the left edge of the crosswalk (foot 0.02-0.04 person heights inside the mask). Excluded by default.
 - There are no human event labels, so misses (e.g. vehicles passing while the pedestrian is out of frame) cannot be counted and no
   precision/recall is claimed. One clip cannot support "better than" any other method.
