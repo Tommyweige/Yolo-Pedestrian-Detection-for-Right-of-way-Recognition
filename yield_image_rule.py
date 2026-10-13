@@ -30,7 +30,7 @@ class Params:
     min_component_fraction: float = 0.005   # smaller crosswalk blobs are noise or far away
     close_px: int = 15                      # bridges gaps cut by vehicles/pedestrians (mask pixels)
     edge_margin_person_heights: float = 0.8 # a pedestrian this close to the crosswalk is "waiting at the edge"
-    lateral_vehicle_widths: float = 1.5     # pedestrian-to-vehicle horizontal gap limit
+    lateral_vehicle_widths: float = 1.5     # pedestrian-to-vehicle gap along the crosswalk axis, in vehicle extents
     min_seconds: float = 0.2                # condition must hold this long
     rider_overlap: float = 0.5              # person box this much inside a vehicle box = rider, not a pedestrian
     band_fraction: float = 0.5              # share of the band below the vehicle that must be crosswalk
@@ -47,6 +47,31 @@ def crosswalk_components(mask, params):
     count, labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
     minimum = params.min_component_fraction * mask.size
     return [(labels == i) for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] >= minimum]
+
+
+def crosswalk_axis(component):
+    """Unit vector (x, y) along the crosswalk (the direction pedestrians walk): the blob's principal axis.
+
+    Works when the camera turns and the crosswalk is no longer horizontal in the image. A blob that is not elongated
+    (axis ratio < 1.3) falls back to horizontal.
+    """
+    ys, xs = np.nonzero(component)
+    if len(xs) < 10:
+        return 1.0, 0.0
+    values, vectors = np.linalg.eigh(np.cov(np.vstack([xs, ys])))
+    if np.sqrt(values[1] / max(values[0], 1e-9)) < 1.3:
+        return 1.0, 0.0
+    ux, uy = vectors[:, 1]
+    return (float(ux), float(uy)) if ux >= 0 else (float(-ux), float(-uy))
+
+
+def along_gap(pbox, vbox, axis):
+    """Distance between pedestrian foot and vehicle centre along the axis, and the vehicle's extent along it."""
+    ux, uy = axis
+    foot = ((pbox[0] + pbox[2]) / 2, pbox[3])
+    centre = ((vbox[0] + vbox[2]) / 2, (vbox[1] + vbox[3]) / 2)
+    extent = abs(ux) * (vbox[2] - vbox[0]) + abs(uy) * (vbox[3] - vbox[1])
+    return abs(ux * (centre[0] - foot[0]) + uy * (centre[1] - foot[1])), extent
 
 
 def scaled(box, sx, sy):
@@ -97,12 +122,13 @@ def scan_frame(mask, people, vehicles, params):
                     if not is_rider(b, vehicle_boxes, params)]
         standing = [s for s in standing if s[2]]
         deep.update(i for i, _, state in standing if state == "on_crosswalk")
+        axis = crosswalk_axis(component)
         for vid, kind, vbox in vehicles:
             if not standing or not vehicle_on(vbox, component, params):
                 continue
-            vwidth = vbox[2] - vbox[0]
             for pid, pbox, state in standing:
-                if abs((pbox[0] + pbox[2]) / 2 - (vbox[0] + vbox[2]) / 2) <= params.lateral_vehicle_widths * vwidth:
+                gap, extent = along_gap(pbox, vbox, axis)
+                if gap <= params.lateral_vehicle_widths * extent:
                     pairs.append((vid, pid, state))
     return pairs, deep
 

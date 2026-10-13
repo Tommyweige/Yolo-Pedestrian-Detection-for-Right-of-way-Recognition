@@ -32,3 +32,14 @@ was chosen between the only two pedestrians seen (0.03 and 0.25 person heights d
   at the left edge of the crosswalk (foot 0.02-0.04 person heights inside the mask). Excluded by default.
 - There are no human event labels, so misses (e.g. vehicles passing while the pedestrian is out of frame) cannot be counted and no
   precision/recall is claimed. One clip cannot support "better than" any other method.
+
+## Turning camera (case A: the camera car turns, judging OTHER vehicles)
+The crosswalk is no longer horizontal in the image. Segmentation, "same crosswalk blob", "foot depth inside the mask" and the
+rider exclusion are orientation-free. The pedestrian-to-vehicle gap used to be measured along the image x axis; it is now measured
+along the crosswalk's own principal axis (`crosswalk_axis`, PCA of the mask blob; falls back to horizontal for non-elongated blobs),
+and the vehicle's size is its box extent projected on that axis.
+Verified with synthetic horizontal / vertical / 45-degree crosswalk masks (15 tests). The vertical case fails under the old
+horizontal rule; the 45-degree case passes under both, so it does not separate them. Real footage of a sharp turn has NOT been tested
+(the clip used so far only has head-turn rotation). Still assumed: the vehicle's ground contact line is roughly the box bottom, and
+the picture is not rolled by much; the pedestrian-entry filter still looks 1 s past the contact (offline only).
+Case B (judging whether the camera car itself yielded) needs the camera car's own motion and is not implemented.
