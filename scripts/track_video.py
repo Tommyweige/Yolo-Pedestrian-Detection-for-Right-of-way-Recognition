@@ -63,6 +63,7 @@ def parse_args(argv):
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--crop-bottom", type=float, default=0.2, help="fraction of the image bottom ignored for features")
     parser.add_argument("--road-top", type=float, default=0.4, help="fraction of the image top ignored (not road)")
+    parser.add_argument("--device", default="0", help="CUDA device for the detector (default 0); cpu must be asked for explicitly")
     parser.add_argument("--max-frames", type=int)
     return parser.parse_args(argv)
 
@@ -70,6 +71,10 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(argv)
     from ultralytics import YOLO  # imported late so --help works without the modern env
+    import torch
+    if args.device != "cpu" and not torch.cuda.is_available():
+        print("CUDA is unavailable; refusing to fall back to CPU silently (pass --device cpu to allow it).", file=sys.stderr)
+        return 2
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(args.video)
@@ -79,7 +84,8 @@ def main(argv=None):
     model = YOLO(args.weights)
     tracks, steps, failures, previous = {}, {}, [], None
     stream = model.track(source=args.video, stream=True, tracker="bytetrack.yaml", persist=True,
-                         classes=list(COCO_KINDS), conf=args.conf, imgsz=args.imgsz, verbose=False)
+                         classes=list(COCO_KINDS), conf=args.conf, imgsz=args.imgsz, device=args.device,
+                         half=args.device != "cpu", verbose=False)
     for index, result in enumerate(stream):
         frame = index + 1  # one-based, same as the legacy event timestamps
         if args.max_frames and index >= args.max_frames:
