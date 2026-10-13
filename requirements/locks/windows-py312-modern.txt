@@ -38,3 +38,4 @@ ultralytics==8.4.175
 ultralytics-platform==0.1.83
 ultralytics-thop==2.2.2
 urllib3==2.8.0
+lap==0.5.13
