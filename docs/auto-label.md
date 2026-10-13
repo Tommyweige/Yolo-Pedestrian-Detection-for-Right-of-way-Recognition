@@ -21,5 +21,9 @@ zero-detection rate, filtered boxes, small objects and the score histogram.
 - Re-running resumes from sidecars; `--retry-failed` redoes errored images. Only `train` is labelled by default.
 
 ## Status
-Tested: `python -m unittest test_auto_label` (offline stub, CPU). **Not tested:** the real Grounding DINO
-teacher (no GPU smoke run for this ticket yet); its adapter is unverified until run in the labeling env.
+Tested: `python -m unittest test_auto_label` (offline stub, CPU).
+GPU smoke (2026-10-13, RTX 4060, conda env `traffic-labeling`, torch 2.13.0+cu130): real Grounding DINO labelled
+50 sampled images from a 2085-image Roboflow export with 0 errors. Checkpoint/config SHA-256 matched `requirements/smoke-assets.json`.
+Observed with the default thresholds (box 0.30): most boxes score 0.3-0.4, there are spurious full-width low-score `zebra`
+boxes, and distant cars are often missed. Thresholds and prompts are untuned; this is a smoke run, not a quality result.
+Agreement with the (sparse, partly polygon) Roboflow labels is not accuracy: unlabeled objects count as "extra".
