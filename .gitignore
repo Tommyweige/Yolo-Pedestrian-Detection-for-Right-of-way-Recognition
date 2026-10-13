@@ -17,3 +17,6 @@ rust-ui/target/
 datasets/
 .env
 *.key
+
+# Ultralytics training/validation outputs.
+runs/
