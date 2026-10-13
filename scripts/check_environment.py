@@ -10,6 +10,13 @@ import subprocess
 import sys
 
 
+def is_isolated():
+    """A venv, or a named conda env (<root>/envs/<name>); never the base install."""
+    prefix = Path(sys.prefix)
+    named_conda_env = (prefix / "conda-meta").is_dir() and prefix.parent.name == "envs"
+    return sys.prefix != sys.base_prefix or named_conda_env
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("profile", choices=("legacy", "labeling", "modern"))
@@ -23,7 +30,7 @@ def main():
     result = {"profile": args.profile, "python": sys.version, "interpreter": sys.executable,
               "platform": platform.platform(), "status": "fail"}
     try:
-        if sys.prefix == sys.base_prefix:
+        if not is_isolated():
             raise ValueError("Run this command using an isolated environment interpreter")
         config_directory = Path(sys.prefix) / ".config" / "ultralytics"
         config_directory.mkdir(parents=True, exist_ok=True)
@@ -36,7 +43,7 @@ def main():
         import cv2
         result.update(torch=torch.__version__, torchvision=torchvision.__version__,
                       numpy=np.__version__, opencv=cv2.__version__, cuda_runtime=torch.version.cuda,
-                      cuda_available=torch.cuda.is_available(), isolated=sys.prefix != sys.base_prefix)
+                      cuda_available=torch.cuda.is_available(), isolated=is_isolated())
         if not result["isolated"]:
             raise ValueError("Run this command using an isolated environment interpreter")
         if args.require_cuda and not torch.cuda.is_available():
