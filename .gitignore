@@ -20,3 +20,6 @@ datasets/
 
 # Ultralytics training/validation outputs.
 runs/
+
+# Per-video human event labels (contain video file names).
+labels/
