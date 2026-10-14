@@ -20,6 +20,15 @@ $video = (Get-ChildItem "$env:USERPROFILE\Videos\*_1080p60.mp4" -File | Select-O
 - 標註會存到 `labels\<影片檔名>.jsonl`(可用 `--labels 路徑` 指定)。
 - 不加 `--video` 也可以,視窗左上角有「開啟影片…」。
 
+## 2.5 一次標很多支影片(快速切換)
+```powershell
+.ust-ui	argetelease\event_labeler.exe --folder datasets\來源影片 --events-dir datasets\eval-run1\events
+```
+- 左側「影片清單」用檔名列出資料夾內所有影片,後面顯示 `[未標]`、`[N 個標記]` 或 `[無事件]`;點一下就切換。
+- 快捷鍵:`]` 或 PageDown 下一支,`[` 或 PageUp 上一支;上方也有「上一支 / 下一支」按鈕。
+- `--events-dir` 資料夾內放 `<影片檔名(不含副檔名)>.jsonl`,切到該影片時自動載入偵測候選。不加就不自動載入。
+- 畫面上方也有「開啟資料夾…」。
+
 ## 3. 畫面
 - **中間**:影片。**右邊**:你標的所有標記(點一下跳過去,可刪除)和偵測候選。
 - **下方兩條時間軸**:上面是整支影片(點擊或拖曳跳轉),下面是目前位置前後 3 秒(精準對位)。

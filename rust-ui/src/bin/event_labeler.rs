@@ -24,6 +24,7 @@ const GREY: egui::Color32 = egui::Color32::from_rgb(130, 130, 130);
 enum PickKind {
     Video,
     Events,
+    Folder,
 }
 
 enum Action {
@@ -62,6 +63,37 @@ struct App {
     screenshot_requested: bool,
     start_frame: Option<u64>,
     pending_events: Option<PathBuf>,
+    videos: Vec<PathBuf>,
+    events_dir: Option<PathBuf>,
+    list_status: Vec<String>,
+    list_refreshed: Instant,
+}
+
+const VIDEO_EXTENSIONS: [&str; 5] = ["mp4", "avi", "mkv", "mov", "m4v"];
+
+fn list_videos(folder: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().is_some_and(|x| VIDEO_EXTENSIONS.contains(&x.to_string_lossy().to_lowercase().as_str())))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+/// "未標" (no label file), "無事件" (declared empty) or "N 個標記", read from the label file.
+fn label_status(video: &Path) -> String {
+    match std::fs::read_to_string(default_labels_path(video)) {
+        Err(_) => "未標".into(),
+        Ok(text) => match text.lines().filter(|l| !l.trim().is_empty()).count() {
+            0 => "無事件".into(),
+            n => format!("{n} 個標記"),
+        },
+    }
 }
 
 fn default_labels_path(video: &Path) -> PathBuf {
@@ -99,6 +131,51 @@ impl App {
             screenshot_requested: false,
             start_frame: None,
             pending_events: None,
+            videos: Vec::new(),
+            events_dir: None,
+            list_status: Vec::new(),
+            list_refreshed: Instant::now(),
+        }
+    }
+
+    fn set_folder(&mut self, folder: &Path) {
+        self.videos = list_videos(folder);
+        self.refresh_list_status();
+        self.status = format!("資料夾 {} 共 {} 支影片", folder.display(), self.videos.len());
+    }
+
+    fn refresh_list_status(&mut self) {
+        self.list_status = self.videos.iter().map(|v| label_status(v)).collect();
+        self.list_refreshed = Instant::now();
+    }
+
+    /// Opens a video from the list, loading its detected events (`<events dir>/<video stem>.jsonl`) when they exist.
+    fn open_from_list(&mut self, path: PathBuf) {
+        let events = self
+            .events_dir
+            .as_ref()
+            .zip(path.file_stem())
+            .map(|(dir, stem)| dir.join(format!("{}.jsonl", stem.to_string_lossy())))
+            .filter(|p| p.is_file());
+        self.open_video(path, None);
+        self.pending_events = events;
+    }
+
+    fn current_index(&self) -> Option<usize> {
+        self.video_path.as_ref().and_then(|p| self.videos.iter().position(|v| v == p))
+    }
+
+    fn switch_video(&mut self, delta: i64) {
+        if self.videos.is_empty() {
+            return;
+        }
+        let next = match self.current_index() {
+            Some(i) => (i as i64 + delta).clamp(0, self.videos.len() as i64 - 1) as usize,
+            None => 0,
+        };
+        if Some(next) != self.current_index() {
+            let path = self.videos[next].clone();
+            self.open_from_list(path);
         }
     }
 
@@ -139,6 +216,7 @@ impl App {
             let chosen = match kind {
                 PickKind::Video => dialog.set_title("開啟影片").add_filter("影片", &["mp4", "avi", "mkv"]).pick_file(),
                 PickKind::Events => dialog.set_title("載入偵測結果 (events.jsonl)").add_filter("事件檔", &["jsonl"]).pick_file(),
+                PickKind::Folder => dialog.set_title("選擇影片資料夾").pick_folder(),
             };
             let _ = output.send(chosen);
             ctx.request_repaint();
@@ -293,6 +371,12 @@ impl App {
         if pressed(egui::Key::N) {
             self.declare_none();
         }
+        if pressed(egui::Key::PageDown) || pressed(egui::Key::CloseBracket) {
+            self.switch_video(1);
+        }
+        if pressed(egui::Key::PageUp) || pressed(egui::Key::OpenBracket) {
+            self.switch_video(-1);
+        }
         for (key, value) in [(egui::Key::Num1, 0.25), (egui::Key::Num2, 0.5), (egui::Key::Num3, 1.0), (egui::Key::Num4, 2.0)] {
             if pressed(key) {
                 self.speed = value;
@@ -312,6 +396,12 @@ impl App {
                     if let Some(path) = chosen {
                         match kind {
                             PickKind::Video => self.open_video(path, None),
+                            PickKind::Folder => {
+                                self.set_folder(&path);
+                                if let Some(first) = self.videos.first().cloned() {
+                                    self.open_from_list(first);
+                                }
+                            }
                             PickKind::Events => {
                                 if self.store.is_some() {
                                     self.load_events(&path);
@@ -408,8 +498,23 @@ impl App {
             if ui.button("開啟影片…").clicked() {
                 self.request_picker(PickKind::Video, ctx);
             }
+            if ui.button("開啟資料夾…").clicked() {
+                self.request_picker(PickKind::Folder, ctx);
+            }
             if ui.add_enabled(self.video_path.is_some(), egui::Button::new("載入偵測結果…")).clicked() {
                 self.request_picker(PickKind::Events, ctx);
+            }
+            if !self.videos.is_empty() {
+                let index = self.current_index();
+                if ui.add_enabled(index.is_some_and(|i| i > 0), egui::Button::new("◀ 上一支 ([)")).clicked() {
+                    self.switch_video(-1);
+                }
+                if ui.add_enabled(index.is_none_or(|i| i + 1 < self.videos.len()), egui::Button::new("下一支 (]) ▶")).clicked() {
+                    self.switch_video(1);
+                }
+                if let Some(i) = index {
+                    ui.weak(format!("{} / {}", i + 1, self.videos.len()));
+                }
             }
             ui.separator();
             if !self.video_name.is_empty() {
@@ -713,6 +818,31 @@ impl eframe::App for App {
             self.controls(ui);
             self.timeline(ui);
         });
+        if self.list_refreshed.elapsed() > Duration::from_secs(1) {
+            self.refresh_list_status();
+        }
+        let mut chosen = None;
+        if !self.videos.is_empty() {
+            egui::SidePanel::left("videos").default_width(250.0).show(ctx, |ui| {
+                ui.heading("影片清單");
+                ui.weak("點選切換;[ ] 或 PageUp/PageDown 上一支/下一支");
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let current = self.current_index();
+                    for (i, video) in self.videos.iter().enumerate() {
+                        let name = video.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        let status = self.list_status.get(i).cloned().unwrap_or_default();
+                        let colour = if status == "未標" { AMBER } else { GREEN };
+                        let text = egui::RichText::new(format!("{}  [{}]", name, status)).color(colour);
+                        if ui.selectable_label(Some(i) == current, text).clicked() && Some(i) != current {
+                            chosen = Some(video.clone());
+                        }
+                    }
+                });
+            });
+        }
+        if let Some(path) = chosen {
+            self.open_from_list(path);
+        }
         egui::SidePanel::right("labels").min_width(300.0).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| actions = self.side_panel(ui));
         });
@@ -727,22 +857,30 @@ fn main() -> eframe::Result {
     let mut app = App::new();
     let mut video = None;
     let mut labels_path = None;
+    let mut folder: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--video" => video = args.next().map(PathBuf::from),
             "--labels" => labels_path = args.next().map(PathBuf::from),
             "--events" => app.pending_events = args.next().map(PathBuf::from),
+            "--folder" => folder = args.next().map(PathBuf::from),
+            "--events-dir" => app.events_dir = args.next().map(PathBuf::from),
             "--frame" => app.start_frame = args.next().and_then(|v| v.parse::<u64>().ok()).map(|f| f.saturating_sub(1)),
             "--screenshot" => app.screenshot = args.next().map(PathBuf::from),
             other => {
-                eprintln!("未知參數:{other}\n用法:event_labeler [--video V] [--labels L.jsonl] [--events E.jsonl] [--frame N]");
+                eprintln!("未知參數:{other}\n用法:event_labeler [--video V | --folder DIR [--events-dir DIR]] [--labels L.jsonl] [--events E.jsonl] [--frame N]");
                 std::process::exit(2);
             }
         }
     }
+    if let Some(dir) = &folder {
+        app.set_folder(dir);
+    }
     if let Some(path) = video {
         app.open_video(path, labels_path);
+    } else if let Some(first) = app.videos.first().cloned() {
+        app.open_from_list(first);
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1360.0, 860.0]).with_min_inner_size([980.0, 620.0]),
