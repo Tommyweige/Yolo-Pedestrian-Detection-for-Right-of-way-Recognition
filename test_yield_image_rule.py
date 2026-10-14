@@ -76,6 +76,25 @@ class ImageRule(unittest.TestCase):
         rider = (900, 620, 1000, 800)    # almost entirely inside the motorcycle box
         self.assertEqual(run([track(1, "person", rider, range(1, 31)), track(10, "motorcycle", bike, range(1, 31))]), [])
 
+    def test_pedestrian_in_front_of_a_bus_is_not_a_rider(self):
+        bus = (700, 400, 1100, 870)
+        walker = (880, 650, 960, 850)    # entirely inside the bus box in the image, but buses have no riders
+        events = run([track(1, "person", walker, range(1, 31)), track(10, "bus", bus, range(1, 31))])
+        self.assertEqual(len(events), 1)
+
+    def test_a_waiting_pedestrian_does_not_use_up_the_vehicle_for_a_later_crossing_pedestrian(self):
+        # a bus stopped on the crosswalk first pairs with someone waiting at the edge (filtered out); a different
+        # pedestrian then crosses in front of the same bus. That second pair must still be reported.
+        waiting = (1230, 480, 1290, 585)
+        tracks = [track(1, "person", waiting, range(1, 61)), track(2, "person", PED_ON, range(31, 61)),
+                  track(10, "car", CAR_ON, range(1, 61))]
+        events = run(tracks, frames=range(1, 61))
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 2)])
+
+    def test_cli_refuses_to_guess_fps(self):
+        from yield_image_rule import main
+        self.assertEqual(main(["--masks", "m.npz", "--tracks", "t.json", "--output", "o.jsonl"]), 2)
+
     def test_pedestrian_on_the_far_crosswalk_does_not_pair_with_a_near_vehicle(self):
         far_ped = (1000, 190, 1040, 245)  # foot (1020, 245) -> mask (340, 81)... on the far blob
         mask = mask_with(NEAR, FAR)
@@ -89,6 +108,11 @@ class ImageRule(unittest.TestCase):
     def test_brief_contact_shorter_than_min_seconds_is_ignored(self):
         strict = Params(fps=60.0, src_size=SRC, min_seconds=0.5)   # needs 30 frames
         self.assertEqual(run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 21))], params=strict), [])
+
+    def test_event_time_is_the_first_frame_of_contact(self):
+        strict = Params(fps=60.0, src_size=SRC, min_seconds=0.2)   # needs 12 frames before the event is confirmed
+        events = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(5, 31))], params=strict)
+        self.assertEqual(events[0].frame, 5)   # the car's first frame on the crosswalk, not frame 16
 
     def test_one_event_per_vehicle_track(self):
         tracks = [track(1, "person", PED_ON, range(1, 31)), track(2, "person", (1350, 700, 1410, 850), range(1, 31)),

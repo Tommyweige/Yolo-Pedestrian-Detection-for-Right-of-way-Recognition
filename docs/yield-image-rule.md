@@ -43,3 +43,14 @@ horizontal rule; the 45-degree case passes under both, so it does not separate t
 (the clip used so far only has head-turn rotation). Still assumed: the vehicle's ground contact line is roughly the box bottom, and
 the picture is not rolled by much; the pedestrian-entry filter still looks 1 s past the contact (offline only).
 Case B (judging whether the camera car itself yielded) needs the camera car's own motion and is not implemented.
+
+## First measurement on human labels (7 compilation clips, 13 labelled events, 2026-10-14) — in-sample, not a result
+The first run used fps 60 / 1920x1080 for every clip although the clips are 25, 30 and 59.94 fps (one is 720p): event times were wrong
+and thresholds mis-scaled. `--video` now reads fps/size from the file and the CLI refuses to guess. Even so the first corrected run found
+1 of 13. `scripts/diagnose_misses.py` showed crosswalk and person detection were never the blocker; the blockers were
+(1) "vehicle on the crosswalk" (the segmentation never labels the crosswalk under the vehicle itself) and
+(2) the pedestrian's own pixels breaking the mask under their feet, so a person mid-crosswalk was "waiting at the edge", and
+(3) a person in front of a bus counted as a rider. All three are fixed (rider exclusion now motorcycles only).
+After the fixes: 2 of 13 matched, 9 predicted, 7 not matching a label (they may be real events the labeller did not mark: review them
+in the labeler before calling them false alarms). The fixes were chosen by looking at these same 13 events, so this is in-sample;
+a fair number needs new clips. A bigger detector (yolo26x) did not change recall.

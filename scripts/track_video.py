@@ -53,11 +53,50 @@ def to_full(matrix):
     return np.linalg.inv(s) @ matrix @ s
 
 
+def drop_ego_parts(tracks, frame_size, bottom_fraction=0.88, max_height_fraction=0.25):
+    """Remove vehicle boxes that are the camera's own mirror/handlebar; returns (kept tracks, boxes removed).
+
+    A helmet-cam mirror is detected as a "car" in the bottom strip of the image, in many short ByteTrack fragments, so
+    the test is per box: the centre lies in the bottom `1 - bottom_fraction` of the image and the box is low
+    (under `max_height_fraction` of the image height). A real vehicle that close to the camera fills much more of the
+    image. Persons are never removed.
+    """
+    _, height = frame_size
+    removed = 0
+
+    def ego(box):
+        return (box[2] + box[4]) / 2 >= bottom_fraction * height and box[4] - box[2] < max_height_fraction * height
+
+    kept = []
+    for track in tracks:
+        if track["kind"] == "person":
+            kept.append(track)
+            continue
+        boxes = [b for b in track["boxes"] if not ego(b)]
+        removed += len(track["boxes"]) - len(boxes)
+        if boxes:
+            frames = {b[0] for b in boxes}
+            kept.append({**track, "boxes": boxes, "raw": [r for r in track["raw"] if r[0] in frames]})
+    return kept, removed
+
+
+def refilter(video, path):
+    capture = cv2.VideoCapture(video)
+    size, total = (int(capture.get(3)), int(capture.get(4))), int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    capture.release()
+    tracks = json.loads(path.read_text(encoding="utf-8"))
+    kept, removed = drop_ego_parts(tracks, size)
+    path.write_text(json.dumps(kept), encoding="utf-8")
+    print(f"removed {removed} camera-fixed vehicle box(es) at the bottom of the frame; {len(kept)} tracks kept", flush=True)
+    return 0
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--video", required=True)
-    parser.add_argument("--weights", required=True, help="verified YOLO26 .pt (see docs/environments.md)")
-    parser.add_argument("--output", required=True, help="output folder")
+    parser.add_argument("--weights", help="verified YOLO26 .pt (see docs/environments.md)")
+    parser.add_argument("--output", help="output folder")
+    parser.add_argument("--refilter", metavar="RAW_TRACKS.json", help="only re-apply the camera-fixed-vehicle filter to an existing raw_tracks.json (no detection)")
     parser.add_argument("--reference-frame", type=int, help="stabilise into this frame's coordinates; omit to skip stabilisation (raw tracks only)")
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--imgsz", type=int, default=1280)
@@ -70,6 +109,11 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.refilter:
+        return refilter(args.video, Path(args.refilter))
+    if not (args.weights and args.output):
+        print("--weights and --output are required (unless --refilter)", file=sys.stderr)
+        return 2
     from ultralytics import YOLO  # imported late so --help works without the modern env
     import torch
     if args.device != "cpu" and not torch.cuda.is_available():
@@ -80,6 +124,7 @@ def main(argv=None):
     capture = cv2.VideoCapture(args.video)
     fps = capture.get(cv2.CAP_PROP_FPS)
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    size = (int(capture.get(3)), int(capture.get(4)))
     capture.release()
     model = YOLO(args.weights)
     kinds = {i: n for i, n in model.names.items() if n in KIND_NAMES}  # COCO-80 and our 7-class models differ in ids
@@ -112,6 +157,10 @@ def main(argv=None):
             entry["raw"].append([frame, *foot])
             entry["boxes"].append([frame, *(float(v) for v in box)])  # x1, y1, x2, y2 in source pixels
 
+    kept, removed = drop_ego_parts(list(tracks.values()), size)
+    if removed:
+        print(f"removed {removed} camera-fixed vehicle box(es) at the bottom of the frame (mirror/handlebar)", flush=True)
+    tracks = {t["id"]: t for t in kept}
     if not args.reference_frame:
         (output / "raw_tracks.json").write_text(json.dumps(list(tracks.values())), encoding="utf-8")
         print(json.dumps({"tracks": len(tracks), "stabilised": False}))
