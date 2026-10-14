@@ -96,9 +96,38 @@ fn label_status(video: &Path) -> String {
     }
 }
 
+/// The repository root (a directory holding `datasets`), found from the working directory or the executable,
+/// so labels and detected events are found no matter where the labeler was started from.
+fn project_root() -> PathBuf {
+    let from_cwd = std::env::current_dir().ok();
+    let from_exe = std::env::current_exe().ok();
+    from_cwd
+        .iter()
+        .chain(from_exe.iter())
+        .flat_map(|p| p.ancestors())
+        .find(|dir| dir.join("datasets").is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_default()
+}
+
 fn default_labels_path(video: &Path) -> PathBuf {
     let stem = video.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "video".into());
-    PathBuf::from("labels").join(format!("{stem}.jsonl"))
+    project_root().join("labels").join(format!("{stem}.jsonl"))
+}
+
+/// Detected events for a video: `<events dir>/<stem>.jsonl`, else the newest `datasets/*/events/<stem>.jsonl`.
+fn find_events(events_dir: Option<&Path>, video: &Path) -> Option<PathBuf> {
+    let name = format!("{}.jsonl", video.file_stem()?.to_string_lossy());
+    if let Some(dir) = events_dir {
+        let path = dir.join(&name);
+        return path.is_file().then_some(path);
+    }
+    std::fs::read_dir(project_root().join("datasets"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("events").join(&name))
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
 impl App {
@@ -151,12 +180,7 @@ impl App {
 
     /// Opens a video from the list, loading its detected events (`<events dir>/<video stem>.jsonl`) when they exist.
     fn open_from_list(&mut self, path: PathBuf) {
-        let events = self
-            .events_dir
-            .as_ref()
-            .zip(path.file_stem())
-            .map(|(dir, stem)| dir.join(format!("{}.jsonl", stem.to_string_lossy())))
-            .filter(|p| p.is_file());
+        let events = find_events(self.events_dir.as_deref(), &path);
         self.open_video(path, None);
         self.pending_events = events;
     }
@@ -395,7 +419,7 @@ impl App {
                     self.picker = None;
                     if let Some(path) = chosen {
                         match kind {
-                            PickKind::Video => self.open_video(path, None),
+                            PickKind::Video => self.open_from_list(path),
                             PickKind::Folder => {
                                 self.set_folder(&path);
                                 if let Some(first) = self.videos.first().cloned() {
@@ -878,7 +902,10 @@ fn main() -> eframe::Result {
         app.set_folder(dir);
     }
     if let Some(path) = video {
+        let explicit = app.pending_events.take();
+        let events = explicit.or_else(|| find_events(app.events_dir.as_deref(), &path));
         app.open_video(path, labels_path);
+        app.pending_events = events;
     } else if let Some(first) = app.videos.first().cloned() {
         app.open_from_list(first);
     }
