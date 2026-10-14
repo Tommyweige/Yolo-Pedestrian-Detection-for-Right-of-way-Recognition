@@ -212,17 +212,20 @@ def detect(mask_at, tracks, params, frames):
         for pair, state in current.items():
             streak[pair] = streak.get(pair, 0) + 1
             started.setdefault(pair, (f, state))
-            if streak[pair] >= need and pair[0] not in done:
-                done.add(pair[0])
+            if streak[pair] >= need and pair not in done:  # one candidate per (vehicle, pedestrian); the crossing filter runs below
+                done.add(pair)
                 reasons = ["short_vehicle_track"] if lengths.get(pair[0], 0) < params.min_track_frames else []
                 candidates.append((started[pair][0], pair, kinds[pair[0]], started[pair][1], reasons))  # time = first frame of contact, not when min_seconds was met
         for pair in [p for p in started if p not in streak]:
             del started[pair]
-    events = []
-    for f, (vid, pid), kind, state, reasons in candidates:
+    events, reported = [], set()
+    for f, (vid, pid), kind, state, reasons in sorted(candidates, key=lambda c: c[0]):
+        if vid in reported:
+            continue  # one event per vehicle: its earliest qualifying pedestrian
         entered = any(abs(g - f) <= window for g in deep_frames.get(pid, []))
         if params.require_crossing and not entered:
-            continue  # stood at the edge the whole time: waiting, not crossing
+            continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle)
+        reported.add(vid)
         span = round(params.evidence_s * params.fps)
         events.append(Event("vehicle_on_crosswalk_with_pedestrian", f, round(f / params.fps, 3), vid, kind, pid, state,
                             entered, (max(1, f - span), f + span), bool(reasons), reasons))
