@@ -100,6 +100,11 @@ class ImageRule(unittest.TestCase):
         strict = Params(fps=60.0, src_size=SRC, min_seconds=0.5)   # needs 30 frames
         self.assertEqual(run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 21))], params=strict), [])
 
+    def test_event_time_is_the_first_frame_of_contact(self):
+        strict = Params(fps=60.0, src_size=SRC, min_seconds=0.2)   # needs 12 frames before the event is confirmed
+        events = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(5, 31))], params=strict)
+        self.assertEqual(events[0].frame, 5)   # the car's first frame on the crosswalk, not frame 16
+
     def test_one_event_per_vehicle_track(self):
         tracks = [track(1, "person", PED_ON, range(1, 31)), track(2, "person", (1350, 700, 1410, 850), range(1, 31)),
                   track(10, "car", CAR_ON, range(1, 31))]

@@ -215,7 +215,7 @@ def detect(mask_at, tracks, params, frames):
             if streak[pair] >= need and pair[0] not in done:
                 done.add(pair[0])
                 reasons = ["short_vehicle_track"] if lengths.get(pair[0], 0) < params.min_track_frames else []
-                candidates.append((f, pair, kinds[pair[0]], started[pair][1], reasons))
+                candidates.append((started[pair][0], pair, kinds[pair[0]], started[pair][1], reasons))  # time = first frame of contact, not when min_seconds was met
         for pair in [p for p in started if p not in streak]:
             del started[pair]
     events = []
