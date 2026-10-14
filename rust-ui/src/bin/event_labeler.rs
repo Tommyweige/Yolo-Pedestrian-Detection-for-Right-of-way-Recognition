@@ -63,6 +63,7 @@ struct App {
     screenshot_requested: bool,
     start_frame: Option<u64>,
     pending_events: Option<PathBuf>,
+    show_overlay: bool,
     videos: Vec<PathBuf>,
     events_dir: Option<PathBuf>,
     list_status: Vec<String>,
@@ -115,6 +116,17 @@ fn default_labels_path(video: &Path) -> PathBuf {
     project_root().join("labels").join(format!("{stem}.jsonl"))
 }
 
+/// The prediction overlay of a video: the newest `datasets/*/overlay/<stem>.mp4`.
+fn find_overlay(video: &Path) -> Option<PathBuf> {
+    let name = format!("{}.mp4", video.file_stem()?.to_string_lossy());
+    std::fs::read_dir(project_root().join("datasets"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("overlay").join(&name))
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
 /// Detected events for a video: `<events dir>/<stem>.jsonl`, else the newest `datasets/*/events/<stem>.jsonl`.
 fn find_events(events_dir: Option<&Path>, video: &Path) -> Option<PathBuf> {
     let name = format!("{}.jsonl", video.file_stem()?.to_string_lossy());
@@ -160,6 +172,7 @@ impl App {
             screenshot_requested: false,
             start_frame: None,
             pending_events: None,
+            show_overlay: false,
             videos: Vec::new(),
             events_dir: None,
             list_status: Vec::new(),
@@ -215,10 +228,21 @@ impl App {
         self.displayed = None;
         self.video_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         self.labels_path = Some(labels.unwrap_or_else(|| default_labels_path(&path)));
-        match video::Preview::open(path.clone()) {
+        self.video_path = Some(path.clone());
+        self.show_overlay = self.show_overlay && find_overlay(&path).is_some();
+        self.start_preview();
+    }
+
+    /// Plays the original video, or the prediction overlay (crosswalk, boxes, banners) of it.
+    fn start_preview(&mut self) {
+        let Some(original) = self.video_path.clone() else { return };
+        let source = if self.show_overlay { find_overlay(&original).unwrap_or(original) } else { original };
+        match video::Preview::open(source) {
             Ok(preview) => {
                 self.preview = Some(preview);
                 self.dirty = true;
+                self.requested = None;
+                self.displayed = None;
                 self.status = "正在載入影片…".into();
             }
             Err(error) => {
@@ -226,7 +250,17 @@ impl App {
                 self.error = Some(error);
             }
         }
-        self.video_path = Some(path);
+    }
+
+    /// Switches between original and overlay at the same frame; labels are untouched.
+    fn set_overlay(&mut self, on: bool) {
+        let available = self.video_path.as_deref().and_then(find_overlay).is_some();
+        if on == self.show_overlay || (on && !available) {
+            return;
+        }
+        self.show_overlay = on;
+        self.playing = false;
+        self.start_preview();
     }
 
     fn request_picker(&mut self, kind: PickKind, ctx: &egui::Context) {
@@ -395,6 +429,9 @@ impl App {
         if pressed(egui::Key::N) {
             self.declare_none();
         }
+        if pressed(egui::Key::V) {
+            self.set_overlay(!self.show_overlay);
+        }
         if pressed(egui::Key::PageDown) || pressed(egui::Key::CloseBracket) {
             self.switch_video(1);
         }
@@ -538,6 +575,19 @@ impl App {
                 }
                 if let Some(i) = index {
                     ui.weak(format!("{} / {}", i + 1, self.videos.len()));
+                }
+            }
+            if let Some(video) = &self.video_path {
+                let available = find_overlay(video).is_some();
+                let mut wanted = None;
+                if ui.selectable_label(!self.show_overlay, "原始影片 (V)").clicked() {
+                    wanted = Some(false);
+                }
+                if ui.add_enabled(available, egui::SelectableLabel::new(self.show_overlay, "預測疊圖 (V)")).clicked() {
+                    wanted = Some(true);
+                }
+                if let Some(on) = wanted {
+                    self.set_overlay(on);
                 }
             }
             ui.separator();
@@ -891,6 +941,7 @@ fn main() -> eframe::Result {
             "--folder" => folder = args.next().map(PathBuf::from),
             "--events-dir" => app.events_dir = args.next().map(PathBuf::from),
             "--frame" => app.start_frame = args.next().and_then(|v| v.parse::<u64>().ok()).map(|f| f.saturating_sub(1)),
+            "--overlay" => app.show_overlay = true,
             "--screenshot" => app.screenshot = args.next().map(PathBuf::from),
             other => {
                 eprintln!("未知參數:{other}\n用法:event_labeler [--video V | --folder DIR [--events-dir DIR]] [--labels L.jsonl] [--events E.jsonl] [--frame N]");
