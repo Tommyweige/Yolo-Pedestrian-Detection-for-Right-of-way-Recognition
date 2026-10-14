@@ -76,6 +76,16 @@ class ImageRule(unittest.TestCase):
         rider = (900, 620, 1000, 800)    # almost entirely inside the motorcycle box
         self.assertEqual(run([track(1, "person", rider, range(1, 31)), track(10, "motorcycle", bike, range(1, 31))]), [])
 
+    def test_pedestrian_in_front_of_a_bus_is_not_a_rider(self):
+        bus = (700, 400, 1100, 870)
+        walker = (880, 650, 960, 850)    # entirely inside the bus box in the image, but buses have no riders
+        events = run([track(1, "person", walker, range(1, 31)), track(10, "bus", bus, range(1, 31))])
+        self.assertEqual(len(events), 1)
+
+    def test_cli_refuses_to_guess_fps(self):
+        from yield_image_rule import main
+        self.assertEqual(main(["--masks", "m.npz", "--tracks", "t.json", "--output", "o.jsonl"]), 2)
+
     def test_pedestrian_on_the_far_crosswalk_does_not_pair_with_a_near_vehicle(self):
         far_ped = (1000, 190, 1040, 245)  # foot (1020, 245) -> mask (340, 81)... on the far blob
         mask = mask_with(NEAR, FAR)
