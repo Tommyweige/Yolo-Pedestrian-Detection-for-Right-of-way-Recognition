@@ -4,7 +4,7 @@ import unittest
 import cv2
 import numpy as np
 
-from crosswalk_space import CrosswalkSpace, fit_space, merge_components
+from crosswalk_space import fit_space, merge_components
 
 H, W = 360, 640
 
@@ -51,6 +51,16 @@ class FitAndProject(unittest.TestCase):
         self.assertTrue(space.clipped)
         _, w = space.to_crosswalk(300, 250)
         self.assertGreater(w, 0.3), self.assertLess(w, 0.7)
+
+    def test_a_piece_cut_by_the_image_edge_only_claims_what_it_shows(self):
+        # a crosswalk strip running off the right edge: it has one real end, at x=300. On a real clip, letting a
+        # clipped piece claim "within half its longest edge" put vehicles 135 px outside it on the crosswalk.
+        space = fit_space(poly_mask([(300, 200), (639, 200), (639, 260), (300, 260)]))
+        self.assertTrue(space.clipped)
+        for x, y in ((400, 230), (620, 230)):        # on the visible piece
+            self.assertTrue(space.along(x, y, *space.to_crosswalk(x, y)))
+        for x, y in ((200, 230), (120, 230)):        # in the same band, 100 and 180 px past its real end
+            self.assertFalse(space.along(x, y, *space.to_crosswalk(x, y)))
 
     def test_a_pedestrian_standing_in_the_crosswalk_does_not_split_it(self):
         left = [(150, 200), (290, 200), (270, 300), (20, 300)]
