@@ -18,6 +18,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from crosswalk_space import fit_space, merge_components
+
 RULE_VERSION = "yield-image-0.1"
 DISCLAIMER = "輔助分析，非法律違規認定"
 VEHICLE_KINDS = {"car", "motorcycle", "bus", "truck"}
@@ -46,6 +48,10 @@ class Params:
     require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
     entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk within this window of the contact does
     evidence_s: float = 3.0
+    geometry: str = "image"                  # "image": pixel strips and person heights; "crosswalk": coordinates of the fitted crosswalk
+    cw_on_margin: float = 0.08               # crosswalk geometry: a foot this deep (crosswalk widths) inside either long edge is on it
+    cw_wait_margin: float = 0.5              # ... and this close outside it is waiting at the edge
+    cw_vehicle_margin: float = 0.05          # a vehicle's ground point this far (widths) outside the band still counts as touching it
 
 
 def crosswalk_components(mask, params):
@@ -136,12 +142,61 @@ def vehicle_on(box, component, params):
     return False
 
 
+def person_state_in_crosswalk(space, box, params):
+    """'on_crosswalk', 'waiting_at_edge' or None from the foot's position in crosswalk coordinates."""
+    length, width = space.to_crosswalk((box[0] + box[2]) / 2, box[3])
+    if not space.clipped and not -0.05 <= length <= 1.05:
+        return None   # beside the crosswalk's end, not at it
+    if params.cw_on_margin <= width <= 1 - params.cw_on_margin:
+        return "on_crosswalk"
+    if -params.cw_wait_margin <= width <= 1 + params.cw_wait_margin:
+        return "waiting_at_edge"
+    return None
+
+
+def vehicle_on_in_crosswalk(space, box, params):
+    """Ground contact of the vehicle (bottom centre of its box) inside the band; returns (on, L centre, L extent)."""
+    (l1, _), (l2, _), (lc, wc) = (space.to_crosswalk(box[0], box[3]), space.to_crosswalk(box[2], box[3]),
+                                  space.to_crosswalk((box[0] + box[2]) / 2, box[3]))
+    inside = -params.cw_vehicle_margin <= wc <= 1 + params.cw_vehicle_margin
+    along = space.clipped or -0.1 <= lc <= 1.1
+    return inside and along, lc, abs(l2 - l1)
+
+
+def scan_component_in_crosswalk(component, people, vehicles, params):
+    space = fit_space(component)
+    if space is None:
+        return None
+    standing = [(i, b, person_state_in_crosswalk(space, b, params)) for i, b in people]
+    standing = [s for s in standing if s[2]]
+    pairs = []
+    for vid, kind, vbox in vehicles:
+        on, v_centre, extent = vehicle_on_in_crosswalk(space, vbox, params)
+        if not (on and standing):
+            continue
+        for pid, pbox, state in standing:
+            length, _ = space.to_crosswalk((pbox[0] + pbox[2]) / 2, pbox[3])
+            if abs(length - v_centre) <= params.lateral_vehicle_widths * max(extent, 1e-6):
+                pairs.append((vid, pid, state))
+    return standing, pairs
+
+
 def scan_frame(mask, people, vehicles, params):
     """Return ([(vehicle_id, person_id, state)], {person ids deep on a crosswalk}) for one frame. Boxes in mask pixels."""
     components = crosswalk_components(mask, params)
+    if params.geometry == "crosswalk":
+        components = merge_components(components)
     vehicle_boxes = [b for _, k, b in vehicles if k in params.rider_kinds]  # a person inside a motorcycle box is a rider
     pairs, deep = [], set()
     for component in components:
+        if params.geometry == "crosswalk":
+            found = scan_component_in_crosswalk(component, [(i, b) for i, b in people if not is_rider(b, vehicle_boxes, params)],
+                                                vehicles, params)
+            if found is not None:
+                standing, component_pairs = found
+                deep.update(i for i, _, state in standing if state == "on_crosswalk")
+                pairs.extend(component_pairs)
+                continue
         distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
         depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
         standing = [(i, b, person_state(b, component, distance, depth, params)) for i, b in people
@@ -251,6 +306,7 @@ def main(argv=None):
     parser.add_argument("--tracks", required=True, help="raw_tracks.json from track_video.py (with boxes)")
     parser.add_argument("--output", required=True, help="events .jsonl")
     parser.add_argument("--include-waiting", action="store_true", help="also report pedestrians who only waited at the edge (disables the crossing filter)")
+    parser.add_argument("--geometry", choices=("image", "crosswalk"), default="image", help="judge in image pixels (default) or in crosswalk coordinates")
     parser.add_argument("--video", help="source video: its fps and size are read from it (time_s and all thresholds depend on them)")
     parser.add_argument("--fps", type=float, help="required unless --video is given")
     parser.add_argument("--width", type=int, help="required unless --video is given")
@@ -265,7 +321,7 @@ def main(argv=None):
         print("Give --video, or all of --fps --width --height (a wrong fps silently shifts every event time)", file=sys.stderr)
         return 2
     params = Params(fps=fps, src_size=(width, height),
-                    require_crossing=not args.include_waiting)
+                    require_crossing=not args.include_waiting, geometry=args.geometry)
     mask_at, _ = load_mask_provider(args.masks)
     tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
     last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)
