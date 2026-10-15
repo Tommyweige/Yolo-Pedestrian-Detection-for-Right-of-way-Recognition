@@ -144,8 +144,9 @@ def vehicle_on(box, component, params):
 
 def person_state_in_crosswalk(space, box, params):
     """'on_crosswalk', 'waiting_at_edge' or None from the foot's position in crosswalk coordinates."""
-    length, width = space.to_crosswalk((box[0] + box[2]) / 2, box[3])
-    if not space.clipped and not -0.05 <= length <= 1.05:
+    x, y = (box[0] + box[2]) / 2, box[3]
+    length, width = space.to_crosswalk(x, y)
+    if not space.along(x, y, length, 0.05):
         return None   # beside the crosswalk's end, not at it
     if params.cw_on_margin <= width <= 1 - params.cw_on_margin:
         return "on_crosswalk"
@@ -159,7 +160,7 @@ def vehicle_on_in_crosswalk(space, box, params):
     (l1, _), (l2, _), (lc, wc) = (space.to_crosswalk(box[0], box[3]), space.to_crosswalk(box[2], box[3]),
                                   space.to_crosswalk((box[0] + box[2]) / 2, box[3]))
     inside = -params.cw_vehicle_margin <= wc <= 1 + params.cw_vehicle_margin
-    along = space.clipped or -0.1 <= lc <= 1.1
+    along = space.along((box[0] + box[2]) / 2, box[3], lc, 0.1)
     return inside and along, lc, abs(l2 - l1)
 
 

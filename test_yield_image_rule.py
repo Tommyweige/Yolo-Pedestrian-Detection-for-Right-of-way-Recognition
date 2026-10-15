@@ -185,6 +185,15 @@ class CrosswalkGeometry(unittest.TestCase):
         self.assertEqual([e.pedestrian_state for e in events], ["on_crosswalk"])
         self.assertEqual(run(tracks, mask=strip.astype(bool), params=replace(self.P, geometry="image")), [])
 
+    def test_a_small_piece_cut_by_the_image_edge_does_not_claim_people_and_cars_far_along_its_extension(self):
+        # coordinates taken from the real 紅燈 clip (frame 52): a right-edge piece, a pedestrian and small cars ~200 px away
+        piece = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(piece, [np.array([(562, 220), (596, 212), (639, 212), (639, 241)], np.int32)], 1)
+        ped = src((240, 133, 252, 171))       # foot (246, 171): W 0.81 on the extended band, L 1.8
+        car = src((280, 163, 290, 173))       # ground point (285, 173), the same L as the pedestrian on the extension
+        tracks = [track(1, "person", ped, range(1, 31)), track(10, "car", car, range(1, 31))]
+        self.assertEqual(run(tracks, mask=piece.astype(bool), params=self.P), [])
+
 
 def src(box):
     return tuple(v * 3 for v in box)   # mask px -> source px (1920x1080 vs 640x360)

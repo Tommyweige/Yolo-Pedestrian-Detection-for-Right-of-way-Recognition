@@ -39,6 +39,18 @@ class CrosswalkSpace:
     quad: np.ndarray         # the fitted corners, image pixels
     clipped: bool            # the crosswalk runs off the image: its ends (L) are not real ends
 
+    def along(self, x, y, length, margin):
+        """Whether (x, y), at crosswalk coordinate `length`, lies within the crosswalk's real extent along L.
+
+        L is bounded by the quadrilateral's ends. A crosswalk cut by the image border has no real end there, so L alone
+        cannot bound it, and the projection of far-away points can land anywhere: those must at least be near the
+        visible piece in the image (within half its longest edge).
+        """
+        if not self.clipped:
+            return -margin <= length <= 1 + margin
+        reach = 0.5 * max(np.linalg.norm(self.quad[(i + 1) % 4] - self.quad[i]) for i in range(4))
+        return cv2.pointPolygonTest(self.quad.astype(np.float32).reshape(-1, 1, 2), (float(x), float(y)), True) >= -reach
+
     def to_crosswalk(self, x, y):
         point = self.matrix @ np.array([x, y, 1.0])
         return float(point[0] / point[2]), float(point[1] / point[2])
@@ -61,8 +73,8 @@ def fit_space(component):
     unit = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], np.float32)
     matrix = cv2.getPerspectiveTransform(np.array(ring, np.float32), unit)
     rows, cols = component.shape
-    on_border = int(quad[:, 0].min() <= 1) + int(quad[:, 0].max() >= cols - 2) + int(quad[:, 1].min() <= 1) + int(quad[:, 1].max() >= rows - 2)
-    return CrosswalkSpace(matrix=matrix, quad=quad, clipped=on_border > 0)
+    clipped = bool(quad[:, 0].min() <= 1 or quad[:, 0].max() >= cols - 2 or quad[:, 1].min() <= 1 or quad[:, 1].max() >= rows - 2)
+    return CrosswalkSpace(matrix=matrix, quad=quad, clipped=clipped)
 
 
 def merge_components(components, max_hull_ratio=1.6):
