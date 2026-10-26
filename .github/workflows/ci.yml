@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install CPU torch
+        run: pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install modern requirements
+        run: pip install -r requirements/modern.txt
+
+      - name: Freeze the modern CPU lock
+        run: pip freeze > linux-py312-modern-cpu.txt
+
+      - name: Upload the modern CPU lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-py312-modern-cpu-lock
+          path: linux-py312-modern-cpu.txt
+
+      - name: Run the test suite
+        run: python -m unittest discover -p "test_*.py" -v
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install GTK and Wayland headers
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
+
+      - name: Build the Rust UI
+        run: cargo build --manifest-path rust-ui/Cargo.toml --locked
