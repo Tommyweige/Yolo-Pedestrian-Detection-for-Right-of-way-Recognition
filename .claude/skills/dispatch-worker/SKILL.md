@@ -40,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File .claude/skills/dispatch-worker/run-visi
   -TaskId T1 -DispatchArgs "--ticket path/to/ticket.md --integration <branch> --allow src/a.py --test 'cmd /c path\to\test.cmd' --timeout 480"
 ```
 
-它開一個標題為「DeepSeek worker: T1」的新 PowerShell 視窗跑上面的 `dispatch.py run`，同時寫 `<repo 旁>\<repo>-logs\dispatch-T1.log`。調度者用 Monitor 監看這個 log，看到 `EXIT=` 即結束（`DISPATCH REPORT` 在它前面）。測試指令含引號或空白路徑時，寫成一個 `.cmd` 檔，`--test` 只傳 `cmd /c <檔案>`，避免 PowerShell 5.1 吃掉內層引號。
+它開一個標題為「DeepSeek worker: T1」的新 PowerShell 視窗跑上面的 `dispatch.py run`，同時寫 `<repo 旁>\<repo>-logs\dispatch-T1.log`。調度者用 Monitor 監看這個 log，看到 `EXIT=` 即結束（`DISPATCH REPORT` 在它前面）。測試指令含引號或空白路徑時，寫成一個 `.cmd` 檔，`--test` 只傳 `cmd /c <檔案>`，避免 PowerShell 5.1 吃掉內層引號。`--test` 只能是單一指令（不經過 shell，`&&`、管線、重新導向都不支援）；要多個步驟就寫成 `.cmd`（Windows）或 `.sh` 檔。
 
 腳本做的事（與 implement-spec 的 implementer 規則一致）：
 1. `git worktree add -b worker/<id> <repo 旁>/<repo>-workers/<id> <integration branch tip>`
