@@ -23,3 +23,6 @@ runs/
 
 # Per-video human event labels (contain video file names).
 labels/
+
+# Amp orb portal registrations.
+.amp/portals/
