@@ -34,6 +34,17 @@ log "installing requirements/legacy.txt"
 uv pip install --python "$venv/bin/python" -r "$repo_root/requirements/legacy.txt"
 uv pip check --python "$venv/bin/python"
 
+# Modern profile (Ultralytics 8.4, NumPy 2) for test_environment_setup; separate venv because it conflicts with legacy.
+modern_venv="$HOME/.venvs/traffic-modern"
+if [[ ! -x "$modern_venv/bin/python" ]]; then
+  log "creating $modern_venv"
+  uv venv --python 3.12 "$modern_venv"
+fi
+log "installing requirements/modern.txt"
+uv pip install --python "$modern_venv/bin/python" --torch-backend=cpu torch==2.13.0 torchvision==0.28.0 -r "$repo_root/requirements/modern.txt"
+uv pip install --python "$modern_venv/bin/python" pip==25.0.1
+uv pip check --python "$modern_venv/bin/python"
+
 # Rust toolchain for rust-ui (edition 2024 needs 1.88+), then fetch crates into the cache.
 if [[ ! -x "$HOME/.cargo/bin/cargo" ]]; then
   log "installing rustup stable"
