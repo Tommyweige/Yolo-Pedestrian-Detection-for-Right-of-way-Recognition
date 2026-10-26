@@ -211,7 +211,7 @@ def main(argv=None) -> int:
             _emit(f"  [{step}/4] {description}", log)
             if command is None:
                 continue
-            result = subprocess.run(command, check=False)
+            result = subprocess.run(command, check=False, cwd=root)
             if result.returncode != 0:
                 _emit(f"失敗：{shlex.join(command)}（結束碼 {result.returncode}）", log)
                 return 1

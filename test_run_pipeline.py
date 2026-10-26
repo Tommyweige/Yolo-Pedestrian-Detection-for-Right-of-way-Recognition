@@ -165,7 +165,7 @@ class MainTest(unittest.TestCase):
         self.add_video("b.mp4")
         calls = []
 
-        def fake_run(command, check=False):
+        def fake_run(command, check=False, cwd=None):
             calls.append(command)
             return mock.Mock(returncode=1)
 
@@ -179,6 +179,16 @@ class MainTest(unittest.TestCase):
     def test_a_missing_folder_or_one_without_videos_returns_two(self):
         self.assertEqual(self.run_main(["--folder", str(self.root / "nope"), "--run", "x"])[0], 2)
         self.assertEqual(self.run_main(["--folder", str(self.folder), "--run", "x"])[0], 2)
+
+    def test_every_step_runs_from_the_repository_root(self):
+        self.add_video("a.mp4")
+        with mock.patch("run_pipeline.subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0)
+            code, _, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
+        self.assertEqual(code, 0)
+        self.assertEqual(run.call_count, 4)
+        for called in run.call_args_list:
+            self.assertEqual(called.kwargs.get("cwd"), run_pipeline.ROOT)
 
     def test_success_runs_every_step_and_appends_the_log(self):
         self.add_video("a.mp4")
