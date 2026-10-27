@@ -46,6 +46,10 @@ $env:TRAFFIC_PYTHON = $legacyPython
 [環境隔離指南](docs/environments.md) 與 [Issue #8 驗證報告](docs/environment-validation-2026-10-10.md)。
 本 PR 僅建立環境；資料匯入、自動標註流水線、訓練與新推論 adapter 尚未實作。
 
+Linux（含 aarch64、CPU-only）沒有現成安裝腳本；實測的系統依賴、venv 建法、
+可用的命令列入口、CPU 速度與已知限制見
+[Linux（CPU-only）安裝與現況](docs/linux-setup.md)。
+
 ### 3. 準備模型權重與測試影片
 
 `controller.py` 不再依賴特定電腦的 `D:` 磁碟路徑；專案內的程式路徑會以
