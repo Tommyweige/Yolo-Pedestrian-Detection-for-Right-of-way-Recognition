@@ -151,6 +151,28 @@ def _video_width(video_path):
     return width
 
 
+def _inference_imgsz(video_width):
+    """Resolve the inference image size, defaulting to the video width.
+
+    TRAFFIC_IMGSZ lets CPU-only deployments shrink the inference size without
+    changing the video they feed in.
+    """
+
+    configured = os.environ.get("TRAFFIC_IMGSZ", "").strip()
+    if not configured:
+        return video_width
+    try:
+        imgsz = int(configured)
+    except ValueError:
+        imgsz = 0
+    if imgsz <= 0:
+        raise ValueError(
+            f"環境變數 TRAFFIC_IMGSZ 必須是正整數，目前設定為：{configured}\n"
+            "請改成例如 640、768 或 1920，或取消設定以沿用影片寬度。"
+        )
+    return imgsz
+
+
 def run_detection(videos, output, model, task, angle=0, cancelled=lambda: False,
                   on_process=lambda process: None):
     """Run traffic prediction scripts and stream desktop protocol events.
@@ -170,7 +192,8 @@ def run_detection(videos, output, model, task, angle=0, cancelled=lambda: False,
         index and sets current=total=1. Cancellation is checked after rotation.
 
     Raises:
-        ValueError: Invalid mode, rotation, output directory or video metadata.
+        ValueError: Invalid mode, rotation, output directory, video metadata or
+            TRAFFIC_IMGSZ.
         FileNotFoundError: A required video, script or checkpoint is missing.
         RuntimeError: The prediction child exits with a nonzero status.
     """
@@ -197,6 +220,7 @@ def run_detection(videos, output, model, task, angle=0, cancelled=lambda: False,
         if not video.is_file():
             raise FileNotFoundError(f"找不到影片：{video}")
         width = _video_width(video)
+        imgsz = _inference_imgsz(width)
         yield {"type": "progress", "index": index, "current": 0, "total": 1,
                "message": f"準備影片：{video.name}"}
         with tempfile.TemporaryDirectory(prefix="traffic_yolo_rotate_") as temporary:
@@ -216,8 +240,8 @@ def run_detection(videos, output, model, task, angle=0, cancelled=lambda: False,
                 return
             command = [sys.executable, str(script), f"model={_hydra_value(model_path)}",
                        f"source={_hydra_value(source)}", f"project={_hydra_value(output_dir)}",
-                       f"name={_hydra_value(video.name)}", f"imgsz={width}",
-                       "conf=0.7", "iou=0.3", "augment=True", "half=True"]
+                       f"name={_hydra_value(video.name)}", f"imgsz={imgsz}",
+                       "conf=0.7", "iou=0.3", "augment=False", "half=True"]
             process = subprocess.Popen(command, cwd=DETECT_DIR, env=environment,
                                        stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
