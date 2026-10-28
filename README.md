@@ -62,6 +62,7 @@ python -m unittest discover -p "test_*.py"
 ## 授權
 
 本專案採 AGPL-3.0（見 `LICENSE`）。`YOLOv8_DeepSORT_Object_Tracking/` 為第三方程式碼（GPL-3.0）。
+第三方元件、版本與授權一覽見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 斑馬線分割模型以 Mapillary Vistas 訓練，授權為 CC BY-NC-SA，只限非商業用途。
 
 ## 附錄：舊版 GUI（legacy）
