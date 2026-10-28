@@ -204,6 +204,16 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 （yolov8n/yolov8s 是公開 COCO 權重，不是專案的交通模型；上表用來說明這顆 CPU 的量級。真實 `yolov8s_zebra.pt` 的 backend 全流程是 0.60 秒/張（第 6 節），與表中 `yolov8s` 768+augment 的 0.676 秒同量級；`imgsz=1920` + augment 以真實模型量到 3.604 秒/張。）
 
+**2026-10-28 註記：預設值已改變。** 本節數字是在 `augment=True` 仍是後端預設的時期量的，保留作為當時預設（TTA）下的對照：表中 `augment=是` 的 3.714（1920）與 0.676（768）秒/張，以及「換算」的 1080p 3.60 秒/張，都是當時預設路徑的實測。2026-10-28 起推論預設改為 `augment=False`，並新增 `TRAFFIC_IMGSZ` 環境變數覆寫推論尺寸（未設定時仍沿用影片寬度）。同一台機器（aarch64、4 vCPU、CPU-only、真實 `yolov8s_tf.pt`、768x432 影格）重測：
+
+| imgsz | augment | 秒/幀 | 相對舊行為 |
+|---:|---|---:|---:|
+| 1920 | 是（舊行為） | 3.743 | — |
+| 1920 | 否（現行預設） | 1.678 | 快約 2.2× |
+| 640 | 否 | 0.273 | 快約 13.7× |
+
+關閉 augment 後約快 2.2×；再把 `imgsz` 降到 640，比舊行為快約 13.7×。`TRAFFIC_IMGSZ` 的設定方式見 [README.md](../README.md) 的「使用說明」一節。
+
 專案後端的設定會直接決定實際速度（`detection_backend.py:217-220`）：
 
 - `augment=True`：成本約 2–3 倍（TTA）。
