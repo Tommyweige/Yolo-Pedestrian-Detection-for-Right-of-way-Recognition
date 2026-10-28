@@ -5,7 +5,7 @@
 - 實測日期：2026-10-27
 - 機器：Oracle A1（aarch64）、Oracle Linux Server 9.8、kernel 6.12.0-206.104.4.4.el9uek.aarch64
 - 資源：4 vCPU、22 GiB RAM、**無 GPU**、無 sudo（執行身分 `amp`）
-- 結論：Python 偵測核心可以只靠 CPU 跑完「影片解碼 → YOLO → DeepSORT → 輸出影片」；但 repo 沒有現成的 Linux 安裝路徑，而且專案權重（Hugging Face 需授權）不在手邊時，無法產生真正的交通事件。PyQt5 與 Rust 介面在這台機器上都不可用。
+- 結論：Python 偵測核心可以只靠 CPU 跑完「影片解碼 → YOLO → DeepSORT → 輸出影片」；但 repo 沒有現成的 Linux 安裝路徑，而且專案權重（2026-10-27 當時 Hugging Face 需授權、未登入回 401；2026-10-28 起已改為 public，見第 4 節）不在手邊時，無法產生真正的交通事件。PyQt5 與 Rust 介面在這台機器上都不可用。
 
 ## 1. 既有文件為什麼不足
 
@@ -116,6 +116,10 @@ nvidia-cusparselt-cu13 0.8.1 is not supported on this platform
 
 ## 4. 模型權重
 
+**2026-10-28 更新：** 模型庫 `TommyPanLab/traffic-violation-yolov8` 已改為 **public**，不需要 Hugging Face 帳號、token 或 `hf auth login`，七個檔案（六個 `*_tf.pt`／`*_zebra.pt` 與 `ckpt.t7`）都可匿名下載。目前的下載指令、固定 revision 與 SHA-256 見 `README.md` 第 3 節與 PR #30。
+
+以下是 **2026-10-27 當時** private／gated 狀態的原始實測紀錄，當時未登入確實回 401；保留作為紀錄，不代表現在仍需授權。
+
 `weights/` 只有 `.gitkeep` 與 `README.md`。文件指定的模型庫在未登入時擋下：
 
 ```text
@@ -166,7 +170,7 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 ## 6. 管線實測（替代權重，只證明程式可跑）
 
-專案權重拿不到，所以用**公開的 COCO 權重**與**隨機初始化的 `ckpt.t7`** 走同一條 production 路徑，只驗證程式管線，**不代表交通事件正確率**：
+2026-10-27 當時專案權重拿不到（HF 模型庫為 private／gated，見第 4 節），所以用**公開的 COCO 權重**與**隨機初始化的 `ckpt.t7`** 走同一條 production 路徑，只驗證程式管線，**不代表交通事件正確率**：
 
 - `yolov8s.pt`（Ultralytics 官方 assets，5.5 MB 級別的公開模型）
 - `ckpt.t7` 由 `deep_sort_pytorch/deep_sort/deep/model.py` 的 `Net(reid=True)` 隨機初始化後存成 `{"net_dict": state_dict}`
@@ -180,7 +184,7 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 | `predict_zebra.py` 直接執行（backend 同參數） | 96/96 幀完成，`1.2ms pre-process, 634.8ms inference, 1.3ms postprocess` |
 | MoviePy 旋轉轉檔（10°、96 幀） | 成功，輸出 96 幀 832x560，耗時 3.14 秒 |
 
-這證明 aarch64 + CPU 上，torch、torchvision、OpenCV、ultralytics 8.0.3、DeepSORT、MoviePy 都能協同工作；缺的只是權重。
+這證明 aarch64 + CPU 上，torch、torchvision、OpenCV、ultralytics 8.0.3、DeepSORT、MoviePy 都能協同工作；當時缺的只是權重（2026-10-28 起已可從公開的模型庫取得，見第 4 節）。
 
 ## 7. CPU 推論速度（實測）
 
@@ -227,7 +231,7 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 1. **PyQt5 無法安裝**：PyPI 沒有 aarch64 wheel，sdist 需要 `qmake` 與 `g++`；此機沒有、也沒有 sudo。`python start.py --legacy` 直接 `ModuleNotFoundError: No module named 'PyQt5'`。
 2. **Rust 介面不可用**：沒有安裝 `cargo`，`python start.py` 只印「請先執行 cargo build --manifest-path rust-ui/Cargo.toml」。`rust-ui/src/video.rs` 的原生影片預覽以 `#[cfg(windows)]` 包住，ADR 0002 也只承諾 Windows。
-3. **專案權重需授權**：Hugging Face 回 401，`weights/` 內沒有六個交通模型；沒有權重就沒有實際事件輸出，只能用替代權重驗證管線。
+3. **2026-10-27 當時專案權重需授權**：Hugging Face 回 401，`weights/` 內沒有六個交通模型，當時只能用替代權重驗證管線、沒有實際事件輸出。2026-10-28 起模型庫已改為 public，免 token 即可下載七個檔案（見第 4 節）。
 4. **`ckpt.t7` 對兩種模式都是硬需求**：連闖紅燈模式也會在 `init_tracker()` 停下。
 5. **CPU 上的預設參數不實用**：`augment=True` 與 `imgsz=width` 都寫死在後端；1080p 只有 0.27 fps。要調整得改程式，不在本文件範圍。
 6. **`pip check` 一定失敗**（`nvidia-cusparselt-cu13`），連帶讓 `scripts/check_environment.py` 判 `fail`。
@@ -236,7 +240,7 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 ## 10. 要讓它在這台機器上真正跑起來，最少需要什麼
 
 1. Python 3.12 + 第 3 節的 pip 安裝指令（**不要**裝 PyQt5）。
-2. 取得六個 `*_tf.pt` / `*_zebra.pt` 與 `ckpt.t7`，放進 `weights/`，或設 `YOLO_WEIGHTS_DIR`、`DEEPSORT_REID_CKPT`。
+2. 取得六個 `*_tf.pt` / `*_zebra.pt` 與 `ckpt.t7`（2026-10-28 起可從公開的 HF 模型庫匿名下載，免 token，見第 4 節），放進 `weights/`，或設 `YOLO_WEIGHTS_DIR`、`DEEPSORT_REID_CKPT`。
 3. 用 `scripts/validate_detection.py` 當唯一入口（避開兩個 GUI）。
 4. 接受 CPU 速度：1080p 約 0.27 fps。若要實用，必須調降 `imgsz`、關閉 `augment`（需要改 `detection_backend.py`）。
 5. 只有在需要舊 GUI 時，才需要 root 安裝 Qt5 開發套件與 `g++` 後自行建置 PyQt5（此機無 sudo，**未實測**）。
