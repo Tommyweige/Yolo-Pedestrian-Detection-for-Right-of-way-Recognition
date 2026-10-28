@@ -62,14 +62,9 @@ $env:TRAFFIC_PYTHON = $legacyPython
 | 不禮讓行人偵測 | `right-of-way/` | `yolov8s_zebra.pt`、`yolov8l_zebra.pt`、`yolov8x6_zebra.pt` |
 | DeepSORT 追蹤 | `tracking/ckpt.t7` | `ckpt.t7` |
 
-**目前存取狀態（2026-10-28 實測）：** 模型庫是 **private**，未登入的匿名請求會回 HTTP 401
-（`Invalid username or password.`）。原因是 `tracking/ckpt.t7` 是第三方 DeepSORT ReID
-權重，來源與再散布條款尚未確認；模型庫內的 `THIRD_PARTY_NOTICES.md` 規定確認前必須保持 private，
-因此尚未公開。目前取得方式：
-
-1. 請模型庫擁有者（TommyPanLab）授予你的 Hugging Face 帳號讀取權限。
-2. 登入：`hf auth login`（read token 即可）。
-3. 用下列任一組指令下載。
+**存取方式（2026-10-28 實測）：** 模型庫為 **public**，不需要 `hf auth login`，也不需要 Hugging Face
+帳號或 token。未登入的 `curl` 與 `hf download` 都已實測可以下載全部七個檔案。
+`hf download` 會提示「unauthenticated requests」，只是速率限制提醒，可忽略。
 
 **固定版本** `98f890a251c03aff28e164c6e835715dbc5019a6`（七個檔案皆已驗證大小與 SHA-256）：
 
@@ -83,17 +78,18 @@ $env:TRAFFIC_PYTHON = $legacyPython
 | `yolov8x6_zebra.pt` | 195346672 | `eced04243f53c6d64c668debcec8664f9ccb5d87c8608baca47eac18a81c880a` |
 | `ckpt.t7` | 46034619 | `df75ddef42c3d1bda67bc94b093e7ce61de7f75a89f36a8f868a428462198316` |
 
-**方法 A：`hf download`**（在專案根目錄的 PowerShell 執行；先下載到暫存資料夾，再攤平到 `weights/`）
+以下兩組指令擇一，在專案根目錄的 PowerShell 執行，結果都是七個檔案直接放在 `weights/`。
+
+**方法 A：`hf download`**（需要 `pip install huggingface_hub`；先下載到暫存資料夾，再攤平到 `weights/`）
 
 ```powershell
 $rev = '98f890a251c03aff28e164c6e835715dbc5019a6'
 $tmp = Join-Path $env:TEMP 'traffic-model'
 hf download TommyPanLab/traffic-violation-yolov8 --revision $rev --local-dir $tmp
-Get-ChildItem "$tmp	raffic-light", "$tmp
 Get-ChildItem "$tmp\traffic-light", "$tmp\right-of-way", "$tmp\tracking" -File | Copy-Item -Destination weights
 ```
 
-**方法 B：`curl`**（需要 `HF_TOKEN` 環境變數；同樣直接攤平到 `weights/`）
+**方法 B：`curl`**（Windows 10 以後內建 `curl.exe`，不需要安裝其他套件）
 
 ```powershell
 $rev = '98f890a251c03aff28e164c6e835715dbc5019a6'
@@ -102,16 +98,13 @@ $files = 'traffic-light/yolov8s_tf.pt', 'traffic-light/yolov8l_tf.pt', 'traffic-
          'right-of-way/yolov8s_zebra.pt', 'right-of-way/yolov8l_zebra.pt', 'right-of-way/yolov8x6_zebra.pt',
          'tracking/ckpt.t7'
 foreach ($f in $files) {
-  curl.exe -L --fail -H "Authorization: Bearer $env:HF_TOKEN" -o "weights/$(Split-Path $f -Leaf)" "$base/$f"
+  curl.exe -L --fail -o "weights/$(Split-Path $f -Leaf)" "$base/$f"
 }
 ```
 
-Linux／macOS 版本只需把迴圈改成 `wget --header="Authorization: Bearer $HF_TOKEN" -O weights/<檔名> "$base/<路徑>"`。
+Linux／macOS 版本把迴圈改成 `wget -O weights/<檔名> "$base/<路徑>"` 即可。
 
-下載後可用 `Get-FileHash weights\* -Algorithm SHA256` 對照上表。
-
-**模型庫改為 public 之後**（目前不適用，匿名請求仍是 401）：上述兩組指令不需要 `hf auth login`
-或 `HF_TOKEN`，可直接匿名執行；改為 public 並重新驗證後，會更新本節的狀態說明。
+下載後可用 `Get-FileHash weights\* -Algorithm SHA256` 對照上表，再執行 `python start.py`。
 
 **目前這台電腦的模型存放位置：**
 

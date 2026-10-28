@@ -19,12 +19,9 @@ weights/
 
 ## Access (checked 2026-10-28)
 
-The model repository is currently **private**: anonymous requests return
-HTTP 401, so `hf auth login` alone is not enough. The repository owner must
-grant your Hugging Face account read access first, and then you log in with
-`hf auth login` (a read token is sufficient). It stays private until the
-redistribution terms of the third-party `tracking/ckpt.t7` DeepSORT ReID
-checkpoint are confirmed.
+The model repository is **public**. No Hugging Face account, `hf auth login`
+or token is needed: anonymous `curl` and `hf download` were both verified to
+fetch all seven files with matching SHA-256.
 
 Pinned revision: `98f890a251c03aff28e164c6e835715dbc5019a6`. The download
 commands (`hf download` and `curl`), the expected size and SHA-256 of each
