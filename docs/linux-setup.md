@@ -5,7 +5,7 @@
 - 實測日期：2026-10-27
 - 機器：Oracle A1（aarch64）、Oracle Linux Server 9.8、kernel 6.12.0-206.104.4.4.el9uek.aarch64
 - 資源：4 vCPU、22 GiB RAM、**無 GPU**、無 sudo（執行身分 `amp`）
-- 結論：Python 偵測核心可以只靠 CPU 跑完「影片解碼 → YOLO → DeepSORT → 輸出影片」；但 repo 沒有現成的 Linux 安裝路徑，而且專案權重（Hugging Face 需授權）不在手邊時，無法產生真正的交通事件。PyQt5 與 Rust 介面在這台機器上都不可用。
+- 結論：Python 偵測核心可以只靠 CPU 跑完「影片解碼 → YOLO → DeepSORT → 輸出影片」；但 repo 沒有現成的 Linux 安裝路徑，而且專案權重（2026-10-27 當時 Hugging Face 需授權、未登入回 401；2026-10-28 起已改為 public，見第 4 節）不在手邊時，無法產生真正的交通事件。PyQt5 與 Rust 介面在這台機器上都不可用。
 
 ## 1. 既有文件為什麼不足
 
@@ -115,6 +115,10 @@ nvidia-cusparselt-cu13 0.8.1 is not supported on this platform
   torch 的 CPU 矩陣運算與 torchvision NMS 都已先通過，失敗點只在 PyQt5 匯入。
 
 ## 4. 模型權重
+
+**2026-10-28 更新：** 模型庫 `TommyPanLab/traffic-violation-yolov8` 已改為 **public**，不需要 Hugging Face 帳號、token 或 `hf auth login`，七個檔案（六個 `*_tf.pt`／`*_zebra.pt` 與 `ckpt.t7`）都可匿名下載。目前的下載指令、固定 revision 與 SHA-256 見 `README.md` 第 3 節與 PR #30。
+
+以下是 **2026-10-27 當時** private／gated 狀態的原始實測紀錄，當時未登入確實回 401；保留作為紀錄，不代表現在仍需授權。
 
 `weights/` 只有 `.gitkeep` 與 `README.md`。文件指定的模型庫在未登入時擋下：
 
