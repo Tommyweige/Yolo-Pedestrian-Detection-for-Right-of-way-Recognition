@@ -62,8 +62,56 @@ $env:TRAFFIC_PYTHON = $legacyPython
 | 不禮讓行人偵測 | `right-of-way/` | `yolov8s_zebra.pt`、`yolov8l_zebra.pt`、`yolov8x6_zebra.pt` |
 | DeepSORT 追蹤 | `tracking/ckpt.t7` | `ckpt.t7` |
 
-如果模型庫要求登入，請先使用 `hf auth login`，並確認帳號有該模型庫的讀取權限。
-本次實測使用的固定版本為 `98f890a251c03aff28e164c6e835715dbc5019a6`，七個檔案皆已驗證大小與 SHA-256。
+**目前存取狀態（2026-10-28 實測）：** 模型庫是 **private**，未登入的匿名請求會回 HTTP 401
+（`Invalid username or password.`）。原因是 `tracking/ckpt.t7` 是第三方 DeepSORT ReID
+權重，來源與再散布條款尚未確認；模型庫內的 `THIRD_PARTY_NOTICES.md` 規定確認前必須保持 private，
+因此尚未公開。目前取得方式：
+
+1. 請模型庫擁有者（TommyPanLab）授予你的 Hugging Face 帳號讀取權限。
+2. 登入：`hf auth login`（read token 即可）。
+3. 用下列任一組指令下載。
+
+**固定版本** `98f890a251c03aff28e164c6e835715dbc5019a6`（七個檔案皆已驗證大小與 SHA-256）：
+
+| 本機檔名 | 大小（bytes） | SHA-256 |
+|---|---:|---|
+| `yolov8s_tf.pt` | 22686136 | `efc8e3baa36eedbe0e56a196c0a0fe9e608ef54f21c9f09646c99bcc5a56e7ca` |
+| `yolov8l_tf.pt` | 87817096 | `a16d909719bd2b7e9669cca163c4b017d432f5503c3f59b0eeb87121c348225c` |
+| `yolov8x6_tf.pt` | 195346672 | `f6d74d94ac0ff31c342f3c66c397157ee465b078756b1a4cd5a15944308f2d30` |
+| `yolov8s_zebra.pt` | 22684984 | `c0146430bc39f3bc56d4a6fd4db5e5f656b95432ef9e64bb6699d32f0ca7e20a` |
+| `yolov8l_zebra.pt` | 87817096 | `3b6fe9cf4cb0c0564d90e03a3a081cc24e14884171ae05237dcd0ff4ec6c2172` |
+| `yolov8x6_zebra.pt` | 195346672 | `eced04243f53c6d64c668debcec8664f9ccb5d87c8608baca47eac18a81c880a` |
+| `ckpt.t7` | 46034619 | `df75ddef42c3d1bda67bc94b093e7ce61de7f75a89f36a8f868a428462198316` |
+
+**方法 A：`hf download`**（在專案根目錄的 PowerShell 執行；先下載到暫存資料夾，再攤平到 `weights/`）
+
+```powershell
+$rev = '98f890a251c03aff28e164c6e835715dbc5019a6'
+$tmp = Join-Path $env:TEMP 'traffic-model'
+hf download TommyPanLab/traffic-violation-yolov8 --revision $rev --local-dir $tmp
+Get-ChildItem "$tmp	raffic-light", "$tmp
+Get-ChildItem "$tmp\traffic-light", "$tmp\right-of-way", "$tmp\tracking" -File | Copy-Item -Destination weights
+```
+
+**方法 B：`curl`**（需要 `HF_TOKEN` 環境變數；同樣直接攤平到 `weights/`）
+
+```powershell
+$rev = '98f890a251c03aff28e164c6e835715dbc5019a6'
+$base = "https://huggingface.co/TommyPanLab/traffic-violation-yolov8/resolve/$rev"
+$files = 'traffic-light/yolov8s_tf.pt', 'traffic-light/yolov8l_tf.pt', 'traffic-light/yolov8x6_tf.pt',
+         'right-of-way/yolov8s_zebra.pt', 'right-of-way/yolov8l_zebra.pt', 'right-of-way/yolov8x6_zebra.pt',
+         'tracking/ckpt.t7'
+foreach ($f in $files) {
+  curl.exe -L --fail -H "Authorization: Bearer $env:HF_TOKEN" -o "weights/$(Split-Path $f -Leaf)" "$base/$f"
+}
+```
+
+Linux／macOS 版本只需把迴圈改成 `wget --header="Authorization: Bearer $HF_TOKEN" -O weights/<檔名> "$base/<路徑>"`。
+
+下載後可用 `Get-FileHash weights\* -Algorithm SHA256` 對照上表。
+
+**模型庫改為 public 之後**（目前不適用，匿名請求仍是 401）：上述兩組指令不需要 `hf auth login`
+或 `HF_TOKEN`，可直接匿名執行；改為 public 並重新驗證後，會更新本節的狀態說明。
 
 **目前這台電腦的模型存放位置：**
 
