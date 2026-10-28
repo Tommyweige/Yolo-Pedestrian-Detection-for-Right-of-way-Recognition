@@ -31,3 +31,7 @@ labels/
 /data/
 /out/
 *.pt
+
+# Local third-party evaluation snapshot of the pre-PR#27 state; superseded by
+# docs/linux-setup.md, so keep it out of the repo.
+/EVALUATION-REPORT.md
