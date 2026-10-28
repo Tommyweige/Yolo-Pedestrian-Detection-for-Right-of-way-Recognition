@@ -15,6 +15,8 @@ from detection_backend import DETECT_DIR, resolve_reid_checkpoint
 
 sys.path.insert(0, str(DETECT_DIR))
 
+LEGACY_AVAILABLE = importlib.util.find_spec("hydra") is not None
+
 
 def load_detector(task):
     path = DETECT_DIR / f"predict_{task}.py"
@@ -24,6 +26,7 @@ def load_detector(task):
     return module
 
 
+@unittest.skipUnless(LEGACY_AVAILABLE, "needs the legacy env (hydra + vendored Ultralytics 8.0.3)")
 class TrafficFrames(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

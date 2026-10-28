@@ -1,9 +1,78 @@
-# 交通違規偵測系統 (Traffic Violation Detection System)
+# 行人路權辨識
 
-## 專案簡介
+從行車記錄器等影片中，找出別的車「不禮讓走上斑馬線的行人」或「闖紅燈」的時間點，再由人工複審。
+輸出僅為輔助分析，不是法律上的違規認定。用語見 [GLOSSARY.md](GLOSSARY.md)。
+
+## 目前狀態
+
+- **不禮讓**：命令列主流程（`scripts/run_pipeline.py`）可以使用，Windows 與 Linux 皆可，GPU 或 CPU 皆可（CPU 很慢）。
+- **Rust 桌面介面**（`rust-ui/`）是之後的主介面，目前仍接舊的偵測後端；改接新流程、一鍵同時偵測闖紅燈與不禮讓，正在進行中，見
+  [docs/adr/0002-rust-ui-dual-detection-in-two-stages.md](docs/adr/0002-rust-ui-dual-detection-in-two-stages.md)。
+- **`yield_rules.py`**（世界座標規則）只作實驗用，見
+  [docs/adr/0001-image-rule-replaces-world-rule.md](docs/adr/0001-image-rule-replaces-world-rule.md)。
+
+## 快速開始（命令列）
+
+需要兩套環境：modern（偵測與追蹤、規則、疊圖）與 labeling（斑馬線分割）。安裝細節見
+[docs/environments.md](docs/environments.md)。
+
+在 Linux 或沒有 GPU 時，modern 環境的安裝方式（與 CI 相同）：
+
+```bash
+pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements/modern.txt
+```
+
+斑馬線分割模型：`facebook/mask2former-swin-large-mapillary-vistas-semantic`，放在
+`runtime/models/mask2former-mapillary`（版本與 SHA-256 見 [docs/yield-image-rule.md](docs/yield-image-rule.md)）。
+
+環境變數 `TRAFFIC_MODERN_PYTHON`、`TRAFFIC_LABELING_PYTHON` 指定兩套環境的 Python；沒設時用目前的 Python。
+
+先用 `--dry-run` 看會跑哪些指令，再正式執行；沒有 GPU 時加 `--device cpu`。範例：
+
+```bash
+python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu --dry-run
+python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu
+```
+
+輸出：`datasets/<run>/events/<影片>.jsonl`（事件）與 `datasets/<run>/overlay/<影片>.mp4`（疊圖）。
+
+## 偵測器權重
+
+不給 `--weights` 時依序使用：環境變數 `TRAFFIC_DETECTOR_WEIGHTS` → `weights/yolo26n-traffic.pt` →
+Ultralytics 官方 `yolo26n.pt`（自動下載）。列在 `requirements/smoke-assets.json` 的權重會驗證 SHA-256，不符就停止。
+模型庫：[Hugging Face：TommyPanLab/traffic-violation-yolov8](https://huggingface.co/TommyPanLab/traffic-violation-yolov8)。
+
+## 測試
+
+```bash
+python -m unittest discover -p "test_*.py"
+```
+
+需要 legacy 環境的測試在其他環境會自動略過；GitHub Actions 在 Linux CPU 上跑同樣的測試，並確認 `rust-ui` 能編譯。
+
+## 文件
+
+- [GLOSSARY.md](GLOSSARY.md)：事件、不禮讓、闖紅燈、標記、預測等用語。
+- [docs/adr/](docs/adr/)：架構決策記錄。
+- [docs/yield-image-rule.md](docs/yield-image-rule.md)：影像規則與斑馬線分割模型。
+- [docs/labeling-events.md](docs/labeling-events.md)：怎麼標事件時間。
+- [docs/environments.md](docs/environments.md)：隔離的依賴環境。
+
+## 授權
+
+本專案採 AGPL-3.0（見 `LICENSE`）。`YOLOv8_DeepSORT_Object_Tracking/` 為第三方程式碼（GPL-3.0）。
+斑馬線分割模型以 Mapillary Vistas 訓練，授權為 CC BY-NC-SA，只限非商業用途。
+
+## 附錄：舊版 GUI（legacy）
+
+這是舊的 YOLOv8 + DeepSORT 偵測後端（闖紅燈 `*_tf.pt`、不禮讓 `*_zebra.pt`），使用 legacy 環境；最早的 PyQt5 版本保存在
+branch `university-project-pyqt5`（tag `legacy/university-project-pyqt5`），永久保留。
+
+### 專案簡介
 本專案是一個基於 YOLOv8 物件偵測和 DeepSORT 物件追蹤技術的交通違規偵測系統。它提供了一個圖形使用者介面 (GUI)，讓使用者可以選擇影片檔案或資料夾，並執行闖紅燈偵測或車輛不禮讓行人偵測。系統還包含影片旋轉校正功能，以適應不同角度的影片輸入。
 
-## 功能特色
+### 功能特色
 - **多種偵測模式**:
     - **闖紅燈偵測**: 識別並記錄闖紅燈行為。
     - **車輛不禮讓行人偵測**: 偵測車輛是否在斑馬線前禮讓行人。
@@ -16,16 +85,16 @@
 - **影片旋轉校正**: 提供一個獨立的「校正畫面」頁面，允許使用者預覽影片並調整旋轉角度，以確保偵測的準確性。
 - **Rust 桌面介面與影片預覽**: 使用 egui/eframe 與 Windows 原生影片解碼；Python 保留 YOLOv8、DeepSORT 與偵測前的旋轉轉檔。
 
-## 安裝指南
+### 安裝指南
 
-### 1. 克隆專案
+#### 1. 克隆專案
 首先，請將本專案從 GitHub 克隆到您的本地機器：
 ```bash
 git clone https://github.com/Tommyweige/Yolo-Pedestrian-Detection-for-Right-of-way-Recognition.git
 cd Yolo-Pedestrian-Detection-for-Right-of-way-Recognition
 ```
 
-### 2. 安裝依賴
+#### 2. 安裝依賴
 目前驗證的組合是 **Windows x64、Python 3.12、CUDA 13.0、RTX 4060 Laptop**。
 請使用明確的 Python 3.12 路徑，建立短路徑的獨立環境；不要直接升級既有 `runtime/detection-env`。
 
@@ -50,7 +119,7 @@ Linux（含 aarch64、CPU-only）沒有現成安裝腳本；實測的系統依�
 可用的命令列入口、CPU 速度與已知限制見
 [Linux（CPU-only）安裝與現況](docs/linux-setup.md)。
 
-### 3. 準備模型權重與測試影片
+#### 3. 準備模型權重與測試影片
 
 `controller.py` 不再依賴特定電腦的 `D:` 磁碟路徑；專案內的程式路徑會以
 `controller.py` 所在位置為基準。模型權重因檔案較大且可能包含訓練資料授權，
@@ -110,13 +179,7 @@ Linux／macOS 版本把迴圈改成 `wget -O weights/<檔名> "$base/<路徑>"` 
 
 下載後可用 `Get-FileHash weights\* -Algorithm SHA256` 對照上表，再執行 `python start.py`。
 
-**目前這台電腦的模型存放位置：**
-
-```text
-C:\Users\tommy\.codex\worktrees\8588\Yolo-Pedestrian-Detection-for-Right-of-way-Recognition\weights
-```
-
-這是本次工作目錄的本機路徑；其他電腦請使用自己的 `<專案根目錄>\weights`。預期結構為：
+預期結構為：
 
 ```text
 weights/
@@ -152,9 +215,9 @@ $env:YOLO_ZEBRA_MODEL = "D:\models\traffic\zebra.pt"
 位置。
 
 
-## 使用說明
+### 使用說明
 
-### 啟動應用程式
+#### 啟動應用程式
 
 先安裝 [Rust](https://www.rust-lang.org/tools/install)，Windows 建置需要 C++ Build Tools
 （MSVC 工具鏈）或 MinGW（GNU 工具鏈）。在專案根目錄建置一次：
@@ -271,7 +334,7 @@ python start.py --legacy
 
 以下為舊版介面操作說明，Rust 版使用相同的偵測設定與主要操作。
 
-### 主畫面 (`主畫面` Tab)
+#### 主畫面 (`主畫面` Tab)
 
 1.  **選取要偵測的影片**:
     *   點擊 `選取要偵測的影片` 按鈕。
@@ -299,7 +362,7 @@ python start.py --legacy
         *   `所有影片進度` (`MultiVideoProgessBar`): 顯示所有選定影片的整體處理進度。
     *   **警告與完成提示**: 如果未選擇影片或輸出路徑，將彈出警告訊息。影片處理完成後，將彈出完成提示。
 
-### 校正畫面 (`校正畫面` Tab)
+#### 校正畫面 (`校正畫面` Tab)
 
 1.  **選擇一部影片做旋轉校正參考**:
     *   點擊 `選擇一部影片做旋轉校正參考` 按鈕。
@@ -314,7 +377,7 @@ python start.py --legacy
     *   調整到滿意的角度後，點擊 `確認` 按鈕。
     *   確認後的旋轉角度將應用於後續的偵測任務。
 
-## 專案結構 (核心檔案)
+### 專案結構 (核心檔案)
 
 -   `start.py`: 應用程式的入口點，啟動 Rust GUI；`--legacy` 啟動 PyQt5。
 -   `rust-ui/`: Rust 桌面介面與 Cargo 鎖定檔。
@@ -333,7 +396,7 @@ python start.py --legacy
     -   `YOLOv8_DeepSORT_Object_Tracking/ultralytics/yolo/v8/detect/predict_zebra.py`: 處理車輛不禮讓行人偵測的核心腳本。
     -   `YOLOv8_DeepSORT_Object_Tracking/ultralytics/yolo/v8/detect/deep_sort_pytorch/`: DeepSORT 追蹤模組。
 
-## 故障排除
+### 故障排除
 
 -   **`ModuleNotFoundError` 或其他依賴問題**: 確保您已按照「安裝指南」中的步驟正確安裝了所有 `requirements.txt` 檔案中的依賴，並且虛擬環境已激活。
 -   **模型權重檔案未找到**: 確保檔名與 `weights/README.md` 相同，或設定
@@ -341,5 +404,5 @@ python start.py --legacy
 -   **影片無法播放或處理**: 檢查影片檔案是否損壞，或格式是否受支援。確保您的系統安裝了必要的影片解碼器。
 -   **GUI 介面顯示異常**: 嘗試重新生成 `UI.py` 檔案（如果 `UI.ui` 有修改）。
 
-## 貢獻
+### 貢獻
 歡迎任何形式的貢獻！如果您有任何建議、錯誤報告或功能請求，請隨時提交 Issue 或 Pull Request。
