@@ -26,3 +26,8 @@ labels/
 
 # Amp orb portal registrations.
 .amp/portals/
+
+# Root-level local dataset copies, run outputs, and downloaded weights.
+/data/
+/out/
+*.pt
