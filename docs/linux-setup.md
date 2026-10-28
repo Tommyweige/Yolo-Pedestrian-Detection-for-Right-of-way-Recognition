@@ -116,7 +116,7 @@ nvidia-cusparselt-cu13 0.8.1 is not supported on this platform
 
 ## 4. 模型權重
 
-**2026-10-28 更新：** 模型庫 `TommyPanLab/traffic-violation-yolov8` 已改為 **public**，不需要 Hugging Face 帳號、token 或 `hf auth login`，七個檔案（六個 `*_tf.pt`／`*_zebra.pt` 與 `ckpt.t7`）都可匿名下載。目前的下載指令、固定 revision 與 SHA-256 見 `README.md` 第 3 節與 PR #30。
+**2026-10-28 更新：** 模型庫 `TommyPanLab/traffic-violation-yolov8` 已改為 **public**，不需要 Hugging Face 帳號、token 或 `hf auth login`，七個檔案（六個 `*_tf.pt`／`*_zebra.pt` 與 `ckpt.t7`）都可匿名下載。目前的下載指令、固定 revision 與 SHA-256 見 `README.md` 第 3 節與 PR #30。2026-10-27 首次探測時該模型庫仍是 private／gated，未登入的 API 請求回 HTTP 401；現在回 200，`private: false`、`gated: false`。
 
 `weights/` 只有 `.gitkeep` 與 `README.md`。
 
