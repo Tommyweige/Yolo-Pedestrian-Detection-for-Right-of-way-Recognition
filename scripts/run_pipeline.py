@@ -96,7 +96,7 @@ def _plan(video: Path, args, root: Path, environ):
     steps.append(
         (
             3,
-            "讓行人規則",
+            f"讓行人規則（{getattr(args, 'geometry', 'image')} 幾何）",
             [
                 modern,
                 str(root / "yield_image_rule.py"),
@@ -106,6 +106,8 @@ def _plan(video: Path, args, root: Path, environ):
                 str(masks),
                 "--tracks",
                 str(tracks),
+                "--geometry",
+                str(getattr(args, "geometry", "image")),
                 "--output",
                 str(events),
             ],
@@ -149,6 +151,12 @@ def _parse_args(argv=None):
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--device", default="0")
     parser.add_argument("--reuse-tracks", action="store_true")
+    parser.add_argument(
+        "--geometry",
+        choices=("image", "crosswalk"),
+        default="image",
+        help="讓行人規則的判斷方式：image（像素條帶，預設）或 crosswalk（斑馬線座標）",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
