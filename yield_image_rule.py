@@ -49,9 +49,12 @@ class Params:
     entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk within this window of the contact does
     evidence_s: float = 3.0
     geometry: str = "image"                  # "image": pixel strips and person heights; "crosswalk": coordinates of the fitted crosswalk
-    cw_on_margin: float = 0.08               # crosswalk geometry: a foot this deep (crosswalk widths) inside either long edge is on it
-    cw_wait_margin: float = 0.5              # ... and this close outside it is waiting at the edge
-    cw_vehicle_margin: float = 0.05          # a vehicle's ground point this far (widths) outside the band still counts as touching it
+    cw_on_margin: float = 0.05               # a foot this deep (crosswalk widths) inside either long edge is on it: the image rule's
+                                             # 0.1 person heights over a 3-4 m crossing, and above the foot jitter of 0.013
+    cw_wait_margin: float = 0.5              # ... and this close outside it is waiting at the edge; 0.1-0.5 gave the same events on
+                                             # the test clip and 0.75 gained a pair, so this is the widest value in the stable range
+    cw_vehicle_margin: float = 0.02          # a vehicle's ground point this far (widths) outside the band still counts as touching it:
+                                             # against the mask, precision falls from 0.71 at 0 to 0.63 at 0.05 with no recall gain
 
 
 def crosswalk_components(mask, params):
