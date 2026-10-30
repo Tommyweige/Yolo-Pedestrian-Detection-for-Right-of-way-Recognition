@@ -20,6 +20,7 @@ def make_args(**overrides):
         "imgsz": 1280,
         "device": "0",
         "reuse_tracks": False,
+        "geometry": "image",
         "dry_run": False,
     }
     values.update(overrides)
@@ -89,6 +90,13 @@ class BuildCommandsTest(unittest.TestCase):
         self.assertEqual(track[track.index("--conf") + 1], "0.15")
         self.assertEqual(track[track.index("--imgsz") + 1], "1280")
         self.assertEqual(track[track.index("--device") + 1], "0")
+
+    def test_the_geometry_flag_reaches_the_rule_step(self):
+        self.make_masks()
+        rule = [command for command in self.commands() if "yield_image_rule.py" in command[1]][0]
+        self.assertEqual(rule[rule.index("--geometry") + 1], "image")
+        rule = [command for command in self.commands(geometry="crosswalk") if "yield_image_rule.py" in command[1]][0]
+        self.assertEqual(rule[rule.index("--geometry") + 1], "crosswalk")
 
     def test_weights_are_only_passed_when_given(self):
         self.make_masks()

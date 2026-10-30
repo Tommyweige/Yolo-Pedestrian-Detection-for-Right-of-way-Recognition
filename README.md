@@ -37,6 +37,20 @@ python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu
 
 輸出：`datasets/<run>/events/<影片>.jsonl`（事件）與 `datasets/<run>/overlay/<影片>.mp4`（疊圖）。
 
+### 斑馬線座標幾何（選用）
+
+預設的 `--geometry image` 用像素條帶與行人身高判斷「行人在斑馬線上／車輛碰到斑馬線」。遇到斑馬線嚴重透視
+（遠處很窄、近處很寬）或斜置時，改成 `--geometry crosswalk`：規則改用斑馬線遮罩擬合出的四邊形座標
+（`crosswalk_space.py`，沿斑馬線 L、跨越斑馬線 W，兩條長邊為 W=0 與 W=1），「在斑馬線上／在邊緣等待／車輛
+碰到斑馬線」都改成在 W 上判斷，不需要行人身高。擬合不出四邊形時退回原來的影像幾何。
+
+```bash
+python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu --geometry crosswalk
+```
+
+兩者的事件欄位相同；差異、門檻由來與實測結果見
+[docs/yield-image-rule.md](docs/yield-image-rule.md)。
+
 ## 偵測器權重
 
 不給 `--weights` 時依序使用：環境變數 `TRAFFIC_DETECTOR_WEIGHTS` → `weights/yolo26n-traffic.pt` →
