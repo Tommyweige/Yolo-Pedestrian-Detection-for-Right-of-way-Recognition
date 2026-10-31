@@ -59,6 +59,30 @@ class ImageRule(unittest.TestCase):
         tracks = [track(1, "person", shallow, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
         self.assertEqual(run(tracks), [])
 
+    # The depth threshold (min_inside_person_heights) is 0.04, the middle of a narrow passing shelf: 0.05 and up lose an
+    # incident and 0.06 is back to the old 0.1 numbers, while 0.03-0.04 both keep it. These three pin the shelf down, one
+    # clear step either side and the boundary itself, so it cannot be moved to a "rounder" number without a test saying
+    # what that costs. The foot sits 3 mask rows inside the crosswalk's top edge on every frame (source boxes are 3x the
+    # mask, so a source height of 222-228 px is 74-76 mask px tall - the range where 3 rows straddles 0.04).
+    def test_foot_just_past_the_depth_threshold_counts_as_crossing(self):
+        # 74 mask px tall -> 3/74 = 0.0405 person heights, just over 0.04
+        just_inside = (1230, 384, 1290, 606)
+        events = run([track(1, "person", just_inside, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id, e.pedestrian_state) for e in events],
+                         [(10, 1, "on_crosswalk")])
+
+    def test_foot_just_short_of_the_depth_threshold_is_waiting(self):
+        # 76 mask px tall -> 3/76 = 0.0395 person heights, just under 0.04
+        just_short = (1230, 378, 1290, 606)
+        tracks = [track(1, "person", just_short, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
+        self.assertEqual(run(tracks), [])
+
+    def test_foot_exactly_at_the_depth_threshold_counts_as_crossing(self):
+        # 75 mask px tall -> 3/75 = 0.04 exactly, and the comparison is inclusive
+        on_the_boundary = (1230, 381, 1290, 606)
+        events = run([track(1, "person", on_the_boundary, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
+        self.assertEqual([e.pedestrian_state for e in events], ["on_crosswalk"])
+
     def test_pedestrian_stepping_onto_the_crosswalk_as_the_vehicle_passes_counts(self):
         steps = {"id": 1, "kind": "person", "boxes":
                  [[f, 1230, 303, 1290, 603] for f in range(1, 16)] + [[f, 1230, 450, 1290, 750] for f in range(16, 31)]}  # foot row 201 -> 250

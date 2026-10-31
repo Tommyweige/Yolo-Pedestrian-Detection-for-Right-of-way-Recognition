@@ -30,20 +30,26 @@ same kind with median box IoU >= 0.45, or a new id starting within 0.5 s where t
 (1.25 s on the current 7 clips), labels closer than the tolerance are one incident, and duplicate reports are measured on the
 tracks, not on vehicle ids. Numbers from the labelled clips are in-sample.
 **Definition (user decision, 2026-10-13): a pedestrian merely waiting at the edge does not count.** A pedestrian counts only if
-their foot is at least 0.1 person heights inside the crosswalk mask at some frame of the contact with the vehicle (from its
+their foot is at least 0.04 person heights inside the crosswalk mask at some frame of the contact with the vehicle (from its
 start to 1 s after it ends), so stepping onto the crosswalk as a vehicle passes counts and standing still at the edge does not.
 Judging the whole contact matters: a slow or late-stepping pedestrian reaches the mask 1.5-2 s after the vehicle's first frame
 on it, and a window around the contact start threw those pairs away. The reported `time_s` is then the frame the pedestrian is
 on the crosswalk (what a human labeller marks); `contact_frames` keeps the whole span. (Image motion cannot be used: the camera
-moves.) This looks at frames after the contact, so it is an offline review tool. `--include-waiting` disables the filter. The 0.1
-threshold was chosen between the only two pedestrians seen (0.03 and 0.25 person heights deep): thin evidence, to be revisited
-with more clips.
+moves.) This looks at frames after the contact, so it is an offline review tool. `--include-waiting` disables the filter.
+The 0.04 depth is **chosen in-sample and sits on a narrow shelf between two cliffs, not in a flat valley**: on the 7 labelled
+clips, incident recall is 11/15 at 0.05 and above (0.06 is already back at the old 0.1 numbers) but 12/15 at 0.03-0.04, where
+manual label hits go 5/9 -> 6/9, confirmed stays 7/8, duplicate reports stay 0 and precision goes 0.429 -> 0.419 with three
+more events. 0.04 is the middle of that shelf and 0.03 is its edge, so 0.04 is what the rule uses. It must be re-validated on
+clips that did not take part in that sweep before the number can be called anything but in-sample. Tested at 0.02, 0.03, 0.04,
+0.05, 0.06, 0.08 and 0.1; the gain window is 0.03-0.04 only.
 
 ## Real-video result (helmet-cam night clip, 900 frames, 60 fps) — NOT a measured accuracy
 - Near-crosswalk segmentation found the crosswalk in all 18 visually checked frames (even with vehicles/pedestrians occluding).
 - With the user's definition: 1 event, f660 (11.0 s): a taxi drives across the crosswalk as the pedestrian steps onto its left end.
 - With `--include-waiting`: also f352 (5.87 s): a white SUV (detected as "truck") crosses while the pedestrian stands motionless
-  at the left edge of the crosswalk (foot 0.02-0.04 person heights inside the mask). Excluded by default.
+  at the left edge of the crosswalk (foot 0.02-0.04 person heights inside the mask). Excluded by default *at the 0.1 depth the
+  run used*; at 0.04 a foot 0.04 or deeper inside counts, so this observation (a range straddling the threshold) needs
+  re-running before it is quoted again.
 - There are no human event labels, so misses (e.g. vehicles passing while the pedestrian is out of frame) cannot be counted and no
   precision/recall is claimed. One clip cannot support "better than" any other method.
 

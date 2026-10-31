@@ -55,8 +55,12 @@ class Params:
     foot_window_person_heights: float = 0.3  # half-width of the window around the foot that must be crosswalk
     foot_surround_fraction: float = 0.75     # ... at least this share of it, to count as standing on the crosswalk
     min_track_frames: int = 15
-    min_inside_person_heights: float = 0.1   # foot must be this deep inside the mask: mask edges are noisy, and a person
-                                             # standing right at the edge is waiting (chosen between the two clips' cases 0.03 and 0.25)
+    min_inside_person_heights: float = 0.04  # foot must be this deep inside the mask: mask edges are noisy, and a person
+                                             # standing right at the edge is waiting. 0.04 is chosen in-sample: on the 7
+                                             # labelled clips incidents go 11/15 at 0.05 and up (and 0.06 is already back
+                                             # at the 0.1 numbers) but 12/15 at 0.03-0.04, so the passing window is a narrow
+                                             # shelf between two cliffs. 0.04 is the middle of that shelf, 0.03 is its edge.
+                                             # It must be re-validated on clips that were not tuned on.
     require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
     entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk during the contact (or this long after it) does
     evidence_s: float = 3.0
