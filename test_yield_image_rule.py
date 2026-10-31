@@ -76,6 +76,26 @@ class ImageRule(unittest.TestCase):
         rider = (900, 620, 1000, 800)    # almost entirely inside the motorcycle box
         self.assertEqual(run([track(1, "person", rider, range(1, 31)), track(10, "motorcycle", bike, range(1, 31))]), [])
 
+    def test_a_rider_whose_box_jitters_out_of_the_motorcycle_box_is_still_a_rider(self):
+        # the tracker's box flickers a few pixels outside the motorcycle on some frames; per-frame containment lets the
+        # rider through on those frames and reports the motorcycle it is riding as a failure to yield.
+        bike = (880, 600, 1040, 870)
+        jitter = [[f, *(900, 594, 1000, 800)] if f % 3 == 0 else [f, 900, 620, 1000, 800] for f in range(1, 31)]
+        self.assertEqual(run([{"id": 1, "kind": "person", "boxes": jitter},
+                              track(10, "motorcycle", bike, range(1, 31))]), [])
+
+    def test_a_person_who_walked_past_a_motorcycle_is_a_pedestrian_in_front_of_another_vehicle(self):
+        # v6 10.6 s: the same person passes a scooter here and rides one three seconds later. Pairing the rider
+        # decision to the person alone hides the walking case, which is a real failure to yield.
+        parked = (700, 600, 860, 870)         # the motorcycle they walk past
+        ridden = (860, 560, 1060, 880)        # the one they ride at the end of the clip
+        person = {"id": 1, "kind": "person", "boxes":
+                  [[f, 880, 650, 960, 850] for f in range(1, 16)]        # walking on the crosswalk
+                  + [[f, 900, 620, 1000, 800] for f in range(16, 31)]}   # sitting on `ridden`
+        events = run([person, track(10, "motorcycle", parked, range(1, 31)),
+                      track(11, "motorcycle", ridden, range(16, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+
     def test_pedestrian_in_front_of_a_bus_is_not_a_rider(self):
         bus = (700, 400, 1100, 870)
         walker = (880, 650, 960, 850)    # entirely inside the bus box in the image, but buses have no riders
@@ -138,6 +158,25 @@ class ImageRule(unittest.TestCase):
         self.assertTrue(events[0].needs_review)
         full = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
         self.assertFalse(full[0].needs_review)
+
+    def test_one_vehicle_tracked_twice_reports_once(self):
+        # ByteTrack keeps a second id for an object it already tracks; both boxes sit on the same car.
+        events = run([track(1, "person", PED_ON, range(1, 31)),
+                      track(10, "car", CAR_ON, range(1, 31)),
+                      track(11, "car", (706, 502, 1006, 872), range(1, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+
+    def test_a_vehicle_that_gets_a_new_track_id_reports_once(self):
+        # the tracker drops the id and picks it up again while the car waits: boxes lined up across the gap
+        events = run([track(1, "person", PED_ON, range(1, 31)),
+                      track(10, "car", CAR_ON, range(1, 18)),
+                      track(11, "car", CAR_ON, range(21, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+
+    def test_two_different_vehicles_are_not_merged(self):
+        from yield_image_rule import vehicle_groups
+        left, right = track(10, "car", CAR_ON, range(1, 31)), track(11, "car", (1400, 500, 1700, 870), range(1, 31))
+        self.assertEqual(vehicle_groups([left, right], P), {10: 10, 11: 11})
 
 
 def src(box):

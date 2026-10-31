@@ -36,8 +36,18 @@ class Params:
     lateral_vehicle_widths: float = 3.0     # pedestrian-to-vehicle gap along the crosswalk axis, in vehicle extents
                                             # (the law is ~3 m / one lane; 1.5 vehicle widths missed motorcycles entirely)
     min_seconds: float = 0.2                # condition must hold this long
-    rider_overlap: float = 0.5              # person box this much inside a motorcycle box = rider, not a pedestrian
+    rider_margin: float = 0.15              # a rider's box jitters; inflate the motorcycle box by this share of person height
+    rider_overlap: float = 0.5              # person box this much inside the inflated motorcycle box = riding on that frame
+    rider_gap_s: float = 0.25               # a tracker dropout between two riding frames this short is still the ride
+    rider_min_frames: int = 5               # ... over at least this many frames, or the person was never on the bike
     rider_kinds: tuple = ("motorcycle",)    # cars/buses/trucks hide their occupants, so a person overlapping them is a pedestrian
+    rider_exclusion: bool = True            # off reproduces the pre-fix rule, so the evaluation can measure what it changed
+    same_vehicle_iou: float = 0.45          # two vehicle tracks this aligned are one vehicle: on the labelled clips
+                                            # the duplicates sit at median IoU 0.32-0.70. Lowering the bar to 0.30 merged
+                                            # every duplicate but also two different vehicles, costing two confirmed
+                                            # labels and one incident, so the bar stays where it does not.
+    same_vehicle_gap_s: float = 0.5         # ... when the second track starts within this long of the first ending
+    merge_duplicates: bool = True           # off reproduces the pre-fix rule, so the evaluation can measure what it changed
     band_fraction: float = 0.5              # share of the band below the vehicle that must be crosswalk
     wheel_line_fraction: float = 0.1        # the wheel line is the bottom of the box up to this fraction of its height
     flank_vehicle_widths: float = 0.5       # crosswalk beside the vehicle, this many vehicle widths on each side
@@ -88,14 +98,155 @@ def scaled(box, sx, sy):
     return (box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy)
 
 
-def is_rider(person, vehicles, params):
-    px1, py1, px2, py2 = person
-    area = max(1e-6, (px2 - px1) * (py2 - py1))
-    for vx1, vy1, vx2, vy2 in vehicles:
-        iw, ih = min(px2, vx2) - max(px1, vx1), min(py2, vy2) - max(py1, vy1)
-        if iw > 0 and ih > 0 and iw * ih / area >= params.rider_overlap:
-            return True
-    return False
+def is_rider(person, vehicle, params):
+    """True when the person box is inside this vehicle box once the box is inflated by the tracker's jitter."""
+    margin = params.rider_margin * (person[3] - person[1])
+    inflated = (vehicle[0] - margin, vehicle[1] - margin, vehicle[2] + margin, vehicle[3] + margin)
+    return covered(person, inflated) >= params.rider_overlap
+
+
+def covered(box, region):
+    """Share of `box` that lies inside `region`."""
+    iw = min(box[2], region[2]) - max(box[0], region[0])
+    ih = min(box[3], region[3]) - max(box[1], region[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    return iw * ih / max(1e-6, (box[2] - box[0]) * (box[3] - box[1]))
+
+
+def rider_frames(tracks, params):
+    """{person id: frames on which that person is riding a motorcycle}.
+
+    Judged over time, not on each frame alone: a rider's box jitters in and out of the motorcycle's box, and judging
+    the frame alone let the rider count as a pedestrian on the frames it was out - the largest single source of
+    unreasonable events on the labelled clips. So a frame is a riding frame when the person's box sits `rider_overlap`
+    inside a motorcycle box inflated by `rider_margin` of the person's height, and a dropout between two riding frames
+    up to `rider_gap_s` apart is filled in (the tracker lost the box for a moment; the person did not get off). A
+    person needs `rider_min_frames` riding frames before any of this applies (someone brushing past a parked scooter in
+    fewer frames is not riding it).
+
+    The mask is per person and per moment - not per person, and not per (person, vehicle) pair. Someone sitting on a
+    scooter is not a pedestrian in front of any vehicle right then; the same person walking across the road three
+    seconds later is one. Judging the whole track at once hides that, and pairing the decision to one vehicle lets a
+    rider of a scooter be counted as a pedestrian in front of the car next to it, which is how this rule first read.
+    Buses, cars and trucks hide their occupants instead of being ridden, so only `rider_kinds` counts.
+    """
+    bikes = [t for t in tracks if t["kind"] in params.rider_kinds]
+    frames = {t["id"]: {int(b[0]): tuple(b[1:]) for b in t["boxes"]} for t in tracks}
+    gap = round(params.rider_gap_s * params.fps)
+    riding = {}
+    for person in tracks:
+        if person["kind"] != "person":
+            continue
+        mine = frames[person["id"]]
+        seats = set()
+        for bike in bikes:
+            theirs = frames[bike["id"]]
+            seats.update(f for f in mine if f in theirs and is_rider(mine[f], theirs[f], params))
+        seats = sorted(seats)
+        if len(seats) < params.rider_min_frames:
+            continue
+        filled = set(seats)                       # a dropout between two riding frames is still the same ride
+        for a, b in zip(seats, seats[1:]):
+            if b - a <= gap:
+                filled.update(range(a, b + 1))
+        riding[person["id"]] = filled
+    return riding
+
+
+def box_iou(a, b):
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    inter = iw * ih
+    return inter / max(1e-6, (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+
+
+def nearest_iou(a, b, frame):
+    """IoU of a's box at `frame` with b's box at the same frame or one frame either side (tracks flicker)."""
+    for g in (frame, frame - 1, frame + 1):
+        if g in b:
+            return box_iou(a[frame], b[g])
+    return 0.0
+
+
+def same_vehicle(a, b, params):
+    """True when two vehicle tracks are one physical vehicle, given their boxes ({frame: box}).
+
+    Two ways one vehicle ends up as two tracks: the tracker keeps a second ID for an object it already tracks
+    (the tracks coexist, and each frame's boxes sit on top of each other), or it drops the ID and picks up a new one
+    (the second track starts where the first ends, boxes lined up). Both are one vehicle, so one report, not two.
+    """
+    if not a or not b:
+        return False
+    fa, fb = (min(a), max(a)), (min(b), max(b))
+    shorter = min(len(a), len(b))
+    overlap = min(fa[1], fb[1]) - max(fa[0], fb[0])
+    if overlap >= max(3, 0.3 * shorter):
+        window = [f for f in a if max(fa[0], fb[0]) <= f <= min(fa[1], fb[1])]
+        if not window:
+            return False
+        matched = [f for f in window if nearest_iou(a, b, f) > 0]
+        if len(matched) < 0.6 * len(window):
+            return False
+        ious = sorted(nearest_iou(a, b, f) for f in matched)
+        return ious[len(ious) // 2] >= params.same_vehicle_iou
+    if overlap > 0.25 * shorter:
+        return False   # they see each other too long to be the same object, and too briefly to be a hand-off
+    gap = max(0, fb[0] - fa[1] if fb[0] > fa[1] else fa[0] - fb[1])
+    if gap > round(params.same_vehicle_gap_s * params.fps):
+        return False
+    shared = sorted(set(a) & set(b))
+    edges = [(f, f) for f in shared] or [(fa[1], fb[0])]
+    return any(f in a and g in b and box_iou(a[f], b[g]) >= params.same_vehicle_iou for f, g in edges)
+
+
+def vehicle_groups(tracks, params):
+    """{track id: group key} for the vehicle tracks that are one physical vehicle (everything else groups alone)."""
+    boxes = {t["id"]: {int(b[0]): tuple(b[1:]) for b in t["boxes"]} for t in tracks}
+    parent = {t["id"]: t["id"] for t in tracks}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    vehicles = [t for t in tracks if t["kind"] in VEHICLE_KINDS]
+    for i, a in enumerate(vehicles):
+        for b in vehicles[i + 1:]:
+            if a["kind"] != b["kind"] or find(a["id"]) == find(b["id"]):
+                continue
+            if same_vehicle(boxes[a["id"]], boxes[b["id"]], params):
+                parent[find(b["id"])] = find(a["id"])
+    return {t["id"]: find(t["id"]) for t in tracks}
+
+
+def merge_duplicate_tracks(tracks, params):
+    """One track per physical vehicle: merge tracks of the same kind that are one object (`same_vehicle`).
+
+    The merged track keeps the longest fragment's id and kind, and the boxes of every fragment (the longer fragment
+    wins on a shared frame). Without this the same car or motorcycle is reported twice.
+    """
+    groups = vehicle_groups(tracks, params)
+    members = {}
+    for t in tracks:
+        members.setdefault(groups[t["id"]], []).append(t)
+    merged = []
+    for group in members.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        longest = max(group, key=lambda t: len(t["boxes"]))
+        frames = {}
+        for member in sorted(group, key=lambda t: len(t["boxes"])):
+            for f, *b in member["boxes"]:
+                frames[int(f)] = b
+        merged.append({"id": longest["id"], "kind": longest["kind"],
+                       "boxes": [[f, *frames[f]] for f in sorted(frames)]})
+    return merged
+
 
 
 def person_state(box, component, distance, depth, params):
@@ -140,16 +291,19 @@ def vehicle_on(box, component, params):
     return False
 
 
-def scan_frame(mask, people, vehicles, params):
-    """Return ([(vehicle_id, person_id, state)], {person ids deep on a crosswalk}) for one frame. Boxes in mask pixels."""
+def scan_frame(mask, people, vehicles, params, riding=()):
+    """Return ([(vehicle_id, person_id, state)], {person ids deep on a crosswalk}) for one frame. Boxes in mask pixels.
+
+    `riding` is the set of person ids riding a motorcycle on this frame (`rider_frames`); someone riding is not a
+    pedestrian in front of anything.
+    """
     components = crosswalk_components(mask, params)
-    vehicle_boxes = [b for _, k, b in vehicles if k in params.rider_kinds]  # a person inside a motorcycle box is a rider
     pairs, deep = [], set()
     for component in components:
         distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
         depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
         standing = [(i, b, person_state(b, component, distance, depth, params)) for i, b in people
-                    if not is_rider(b, vehicle_boxes, params)]
+                    if i not in riding]
         standing = [s for s in standing if s[2]]
         deep.update(i for i, _, state in standing if state == "on_crosswalk")
         axis = crosswalk_axis(component)
@@ -189,6 +343,9 @@ class Event:
 
 def detect(mask_at, tracks, params, frames):
     """mask_at(frame) -> bool array; tracks: list of {"id","kind","boxes":[[frame,x1,y1,x2,y2],...]}."""
+    if params.merge_duplicates:                        # one vehicle per track, so it can be reported once
+        tracks = merge_duplicate_tracks(tracks, params)
+    riders = rider_frames(tracks, params) if params.rider_exclusion else {}  # a rider is not a pedestrian
     boxes = {}
     for t in tracks:
         for f, *b in t["boxes"]:
@@ -206,7 +363,8 @@ def detect(mask_at, tracks, params, frames):
         people = [(i, scaled(b, sx, sy)) for i, k, b in here if k == "person"]
         vehicles = [(i, k, scaled(b, sx, sy)) for i, k, b in here if k in VEHICLE_KINDS]
         kinds.update({i: k for i, k, _ in vehicles})
-        pairs, deep = scan_frame(mask, people, vehicles, params)
+        pairs, deep = scan_frame(mask, people, vehicles, params,
+                                 [pid for pid, seats in riders.items() if f in seats])
         for pid in deep:
             deep_frames.setdefault(pid, []).append(f)
         current = {}

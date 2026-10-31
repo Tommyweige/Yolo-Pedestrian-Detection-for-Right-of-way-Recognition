@@ -29,6 +29,8 @@ def main(argv=None):
     params = r.Params(fps=fps, src_size=(width, height))
     mask_at, _ = r.load_mask_provider(args.masks)
     tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
+    tracks = r.merge_duplicate_tracks(tracks, params)
+    riders = r.rider_frames(tracks, params)
     boxes = {}
     for t in tracks:
         for f, *b in t["boxes"]:
@@ -49,19 +51,19 @@ def main(argv=None):
             components = r.crosswalk_components(mask, params)
             counts["crosswalk"] += bool(components)
             counts["person"] += bool(people)
-            rider_boxes = [b for _, k, b in vehicles if k in params.rider_kinds]
+            riding = [pid for pid, seats in riders.items() if f in seats]
             at, on = False, False
             for component in components:
                 distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
                 depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
                 standing = [s for s in ((i, b, r.person_state(b, component, distance, depth, params)) for i, b in people
-                                        if not r.is_rider(b, rider_boxes, params)) if s[2]]
+                                        if i not in riding) if s[2]]
                 at |= bool(standing)
                 counts["deep"] += any(s[2] == "on_crosswalk" for s in standing)
                 on |= any(r.vehicle_on(v[2], component, params) for v in vehicles)
             counts["person_at_crosswalk"] += at
             counts["vehicle_on"] += on
-            pairs, _ = r.scan_frame(mask, people, vehicles, params)
+            pairs, _ = r.scan_frame(mask, people, vehicles, params, riding)
             counts["pair"] += bool(pairs)
         order = ["crosswalk", "person", "person_at_crosswalk", "vehicle_on", "pair"]
         blocker = next((s for s in order if counts[s] == 0), "none (all stages pass somewhere; check timing/entry filter)")

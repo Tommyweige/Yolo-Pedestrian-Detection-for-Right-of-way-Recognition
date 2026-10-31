@@ -18,8 +18,17 @@ Mapillary Vistas is CC BY-NC-SA: research/demo use only.
 
 Event = a vehicle whose bottom edge is on the same crosswalk blob as a pedestrian (foot on it, or within 0.8 person heights of its
 edge), horizontal gap <= 3 vehicle widths (the law is ~3 m / one lane; 1.5 vehicle widths missed motorcycles, whose boxes are
-under a metre wide), for >= 0.2 s; motorcycle riders/occupants (person box inside a vehicle box) are
-excluded; one event per vehicle track.
+under a metre wide), for >= 0.2 s; one event per vehicle track.
+Motorcycle riders are not pedestrians (`rider_frames`): a frame counts as riding when the person box sits 50% inside a
+motorcycle box inflated by 15% of the person's height, dropouts up to 0.25 s between riding frames are filled in, and the
+track needs 5 such frames. It is decided per person and per moment, not per frame (a rider's box jitters out of the bike box
+and was reported as a pedestrian) and not per person (someone who walks across the road and rides a scooter in the same clip
+is a pedestrian while walking). One vehicle tracked twice is one vehicle (`merge_duplicate_tracks`: coexisting tracks of the
+same kind with median box IoU >= 0.45, or a new id starting within 0.5 s where the old one ended with IoU >= 0.45).
+**Evaluation is fixed before the rule is tuned** (`docs/adr/0003-fixed-rule-evaluation.md`,
+`scripts/eval_rule_events.py`): the matching tolerance is derived from the labels-vs-predictions residual distribution
+(1.25 s on the current 7 clips), labels closer than the tolerance are one incident, and duplicate reports are measured on the
+tracks, not on vehicle ids. Numbers from the labelled clips are in-sample.
 **Definition (user decision, 2026-10-13): a pedestrian merely waiting at the edge does not count.** A pedestrian counts only if
 their foot is at least 0.1 person heights inside the crosswalk mask at some frame of the contact with the vehicle (from its
 start to 1 s after it ends), so stepping onto the crosswalk as a vehicle passes counts and standing still at the edge does not.
