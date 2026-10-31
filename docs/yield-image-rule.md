@@ -12,14 +12,18 @@ python scripts/segment_crosswalk.py --video clip.mp4 --model runtime/models/mask
 python scripts/track_video.py --video clip.mp4 --weights runtime/smoke-assets/yolo26n.pt --output out/tracks
 # any env with numpy/opencv
 python yield_image_rule.py --masks out/seg/masks.npz --tracks out/tracks/raw_tracks.json --output out/events.jsonl
+# low-noise mode (the old one event per vehicle, 4.4 instead of 7.1 reports per clip on the labelled clips)
+python yield_image_rule.py ... --one-event-per-vehicle
 ```
 Segmentation model: facebook/mask2former-swin-large-mapillary-vistas-semantic @ 4772b6bf (safetensors SHA-256 72721afb...e2ea7).
 Mapillary Vistas is CC BY-NC-SA: research/demo use only.
 
 Event = a vehicle whose bottom edge is on the same crosswalk blob as a pedestrian (foot on it, or within 0.8 person heights of its
 edge), horizontal gap <= 3 vehicle widths (the law is ~3 m / one lane; 1.5 vehicle widths missed motorcycles, whose boxes are
-under a metre wide), for >= 0.2 s; one event per vehicle track when the command line runs, while the evaluated default is the
-candidate-list construction below, which reports every contact and merges repeats of one pedestrian inside the vehicle's pass.
+under a metre wide), for >= 0.2 s. **The command line reports the candidate list by default** (user decision, 2026-10-31):
+every (vehicle, pedestrian) contact, with repeats of one pedestrian inside that vehicle's pass merged by `contact_dedup`
+(default `pair`). `--one-event-per-vehicle` switches back to the old construction, one event per vehicle (its earliest
+qualifying pedestrian), which is kept as the low-noise mode and as the comparison row in `eval_constructions.py`.
 Motorcycle riders are not pedestrians (`rider_frames`): a frame counts as riding when the person box sits 50% inside a
 motorcycle box inflated by 15% of the person's height, dropouts up to 0.25 s between riding frames are filled in, and the
 track needs 5 such frames. It is decided per person and per moment, not per frame (a rider's box jitters out of the bike box
@@ -68,15 +72,33 @@ feeding every row below), and only these rows are quoted anywhere:
   after it. Which contact of a pass survives is `contact_dedup`, measured in the next section.
 - The default combination, and the one row to quote, is the last one: candidate list, `contact_dedup="pair"`, depth 0.03,
   **74 contacts -> 50 reports, manual 8/9, confirmed 8/8, incident recall 14/15, 14 duplicate reports, precision 0.320**.
-  `scripts/eval_constructions.py` runs that combination by default; every other variant and depth stays selectable. The
-  command line still emits one event per vehicle (`report_every_contact=False` is unchanged), so the rule's own output and
-  the scored default are not the same list yet - see "Comparing the constructions" below before quoting either.
+  `scripts/eval_constructions.py` runs that combination by default; every other variant and depth stays selectable. This is
+  also what the command line emits since 2026-10-31; the old construction is still there as `--one-event-per-vehicle`
+  (`report_every_contact=False`), for the comparison row above and as a low-noise mode.
 - The 0.04 row is kept only as the depth comparison: the same default at 0.04 is 72 -> 49, 7/9, 8/8, 13/15, 14, 0.306, so
   the two depths differ by exactly one manual label and one incident (clip 5's 21.667 s and its incident).
 - Clip 5 is where the depth and the reported time are coupled: from 0.1 to 0.04 the same contacts report 2.7 s and 4.2 s
   earlier ("first frame on the crosswalk" arrives sooner once the shallow edge counts), which leaves the 8.9 s and 21.7 s
   labels 1.9 s and 1.6 s from the nearest report, outside the 1.25 s tolerance. At 0.03 the 21.667 s contact reports at
   22.8 s (1.13 s away) and that label is hit again; the 8.9 s label needs a different contact, see the next section.
+
+## Product output: what the command line emits (2026-10-31, in-sample)
+The default construction changed, so the CLI's own output changed. Counted by running `yield_image_rule.py` on all 7
+labelled clips (same argv, output file read back), and scored by `scripts/eval_rule_events.py` at 1.25 s:
+
+| CLI | events / 7 clips | per clip | manual | confirmed | incident recall | duplicate reports | precision |
+|---|---|---|---|---|---|---|---|
+| `--one-event-per-vehicle` (old default) | 31 | 4, 2, 4, 3, 4, 7, 7 | 6/9 | 7/8 | 12/15 | 0 | 0.419 |
+| default (candidate list, `pair`, 0.03) | 50 | 4, 2, 16, 3, 7, 8, 10 | 8/9 | 8/8 | 14/15 | 14 | 0.320 |
+
+- The cost is real and not uniform: 4.4 -> 7.1 events per clip on average, but one clip goes 4 -> 16. Those extra reports
+  are mostly the same vehicle meeting several pedestrians, and they are the price of not dropping the pedestrian a labeller
+  marked. The GUI shows them collapsed into one row per vehicle, so a reviewer does not see the growth, but anything that
+  counts the events file sees it, and precision drops 0.419 -> 0.320 because the duplicates count as extra reports.
+- To get the old output back, use `--one-event-per-vehicle` on the CLI, `report_every_contact=False` in `Params`, or
+  `--params '{"report_every_contact": false}'` in `scripts/eval_rule_events.py`. `--contact-dedup earliest` gives a
+  middle ground at this construction (36 reports, 7/9, 13/15, 0.389) but it drops a labelled crossing, so it is not the
+  default.
 
 ## Which contact of a pass survives (2026-10-31, in-sample)
 `Params.contact_dedup` decides which report stands for a vehicle's pass. The rule's own construction makes the same choice
@@ -134,9 +156,10 @@ scoring tolerance; "unreported" counts judged events that no surviving report ma
   2-4 contacts in the other, so raw counts, "after collapse" counts and precision are all construction-specific: 0.429
   (28 events) and 0.320 (50 reports) do not say one construction is worse, they say the denominators are different units.
   Compare precision only inside one construction - e.g. `pair` 0.320 against `earliest` 0.389 on the same 74 contacts.
-- Manual labels, confirmed events, incident recall and duplicate reports are counted per judged event, so those four are
-  comparable across constructions. That is what the table is for: on the same 28 judged events, one event per vehicle at
-  0.03 gets 6/9 manual and 12/15; the candidate list with `pair` gets 8/9 and 14/15.
+- Manual labels, confirmed events and incident recall are counted per judged event, so those three are comparable across
+  constructions. Duplicate reports are not - the old construction reports one event per vehicle, so it cannot produce one.
+  Within the candidate list they are the report the `pair` trade is about. On the same 28 judged events, one event per
+  vehicle at 0.03 gets 6/9 manual and 12/15; the candidate list with `pair` gets 8/9 and 14/15.
 - Any future table (including the clip-classifier route's) has to be scored by `scripts/eval_constructions.py` with its
   dedup stated. A number quoted without its construction, dedup and depth is not comparable with any row here.
 

@@ -10,10 +10,11 @@ it ends, so stepping on as the vehicle passes is caught while standing still at 
 vehicle's first frame on it. The reported time is then the frame the pedestrian is on the crosswalk, which is what a human
 labeller marks; contact_frames keeps the whole span. This uses frames after the contact: offline only.
 --include-waiting disables that filter; each event records the pedestrian state at contact and whether they entered.
-How contacts become events is a parameter: by default one event per vehicle (its earliest qualifying pedestrian), or with
-`report_every_contact` every (vehicle, pedestrian) contact, repeats of one pedestrian inside a pass merged (`contact_dedup`,
-default "pair"). Both are scored by the same scripts/eval_rule_events.py, so the two constructions can be compared on one
-table, but their event counts are not comparable to each other (docs/yield-image-rule.md).
+How contacts become events is a parameter: by default the candidate list (every (vehicle, pedestrian) contact, repeats of
+one pedestrian inside a pass merged by `contact_dedup`, default "pair"), or with `report_every_contact=False` one event per
+vehicle (its earliest qualifying pedestrian), which `--one-event-per-vehicle` selects. Both are scored by the same
+scripts/eval_rule_events.py, so the two constructions can be compared on one table, but their event counts are not
+comparable to each other (docs/yield-image-rule.md).
 Output is a candidate for review, not a legal finding.
 """
 import argparse
@@ -67,9 +68,15 @@ class Params:
                                              # incident only at 0.03 (8/9, 14/15 against 7/9, 13/15 at 0.04). 0.03 is the
                                              # edge of that passing shelf, not its middle: one step further and recall falls
                                              # off the cliff. It must be re-validated on clips that were not tuned on.
-    report_every_contact: bool = False      # False: one event per vehicle (its earliest qualifying pedestrian). True: report
-                                            # every (vehicle, pedestrian) contact and let `contact_dedup` collapse one
-                                            # vehicle's pass - the "candidate list" construction, for comparison only.
+    report_every_contact: bool = True       # True (default): the candidate list - every (vehicle, pedestrian) contact,
+                                            # repeats of one pedestrian inside the vehicle's pass merged by `contact_dedup`.
+                                            # A vehicle that obstructs two pedestrians in one pass reports both, because
+                                            # the pass collapse cannot know which of them a labeller marked (clip 5 in
+                                            # docs/yield-image-rule.md); the cost is more reports per clip (4.4 -> 7.1 on
+                                            # the labelled clips) and the duplicate reports are expected output.
+                                            # False: one event per vehicle (its earliest qualifying pedestrian), the old
+                                            # construction, kept as the low-noise mode (`--one-event-per-vehicle`) and as the
+                                            # comparison row in scripts/eval_constructions.py.
     contact_dedup_s: float = 1.25           # candidate list only, one pass = a vehicle's contacts chained by report time within
                                             # this window (the evaluation's tolerance, so both constructions are scored alike).
                                             # 0 keeps every contact, which is how the raw candidate count is measured.
@@ -498,6 +505,11 @@ def main(argv=None):
     parser.add_argument("--tracks", required=True, help="raw_tracks.json from track_video.py (with boxes)")
     parser.add_argument("--output", required=True, help="events .jsonl")
     parser.add_argument("--include-waiting", action="store_true", help="also report pedestrians who only waited at the edge (disables the crossing filter)")
+    parser.add_argument("--one-event-per-vehicle", action="store_true",
+                        help="low-noise mode: one event per vehicle (its earliest qualifying pedestrian) instead of the "
+                             "candidate list that reports every contact; fewer reports, drops the second pedestrian of a pass")
+    parser.add_argument("--contact-dedup", choices=CONTACT_DEDUP_VARIANTS, default=Params.contact_dedup,
+                        help="which contact of a vehicle's pass is reported (candidate list only, default: %(default)s)")
     parser.add_argument("--video", help="source video: its fps and size are read from it (time_s and all thresholds depend on them)")
     parser.add_argument("--fps", type=float, help="required unless --video is given")
     parser.add_argument("--width", type=int, help="required unless --video is given")
@@ -512,7 +524,9 @@ def main(argv=None):
         print("Give --video, or all of --fps --width --height (a wrong fps silently shifts every event time)", file=sys.stderr)
         return 2
     params = Params(fps=fps, src_size=(width, height),
-                    require_crossing=not args.include_waiting)
+                    require_crossing=not args.include_waiting,
+                    report_every_contact=not args.one_event_per_vehicle,
+                    contact_dedup=args.contact_dedup)
     mask_at, _ = load_mask_provider(args.masks)
     tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
     last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)

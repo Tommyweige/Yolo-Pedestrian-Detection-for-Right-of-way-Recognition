@@ -8,7 +8,8 @@ from yield_image_rule import Params, detect
 
 H, W = 360, 640
 SRC = (1920, 1080)  # boxes below are in source pixels; masks are 640x360 (scale 1/3)
-P = Params(fps=60.0, src_size=SRC, min_seconds=0.1)
+P = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=False)   # the low-noise construction, explicit
+DEFAULT = Params(fps=60.0, src_size=SRC, min_seconds=0.1)                         # exactly what the shipped defaults give
 
 
 def mask_with(*rects):
@@ -177,9 +178,24 @@ class ImageRule(unittest.TestCase):
                   track(10, "car", CAR_ON, range(1, 31))]
         self.assertEqual(len(run(tracks)), 1)
 
-    # The candidate-list construction (report_every_contact) is what the paper-side comparison scores, so these two pin
-    # what its default dedup (`pair`) is meant to do: repeats of one pedestrian inside one vehicle pass are one report,
-    # two pedestrians of that pass are two reports.
+    # The shipped construction is the candidate list with `pair` at depth 0.03 (user decision, 2026-10-31), so a vehicle
+    # that obstructs two pedestrians in one pass reports both. Every other test here passes its own Params, which is why
+    # this one test is the only thing that fails if the default is flipped back: it pins the default, which is a product
+    # decision and not a free parameter, and the numbers behind it (4.4 -> 7.1 reports per clip) are in
+    # docs/yield-image-rule.md.
+    def test_default_params_report_every_contact_of_a_pass(self):
+        self.assertTrue(DEFAULT.report_every_contact)
+        self.assertEqual(DEFAULT.contact_dedup, "pair")
+        self.assertEqual(DEFAULT.min_inside_person_heights, 0.03)
+        first, second = (1230, 700, 1290, 850), (1350, 700, 1410, 850)
+        tracks = [track(1, "person", first, range(1, 61)), track(2, "person", second, range(70, 121)),
+                  track(10, "car", CAR_ON, range(1, 121))]
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=range(1, 121), params=DEFAULT)],
+                         [(10, 1), (10, 2)])                             # one pass, two pedestrians, two reports
+
+    # The candidate-list construction is the shipped default; these tests spell it out so that a later change to the
+    # default cannot silently rewrite what they check. They pin what its dedup (`pair`) is meant to do: repeats of one
+    # pedestrian inside one vehicle pass are one report, two pedestrians of that pass are two reports.
     CANDIDATE = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True)
 
     def test_candidate_list_reports_a_later_contact_of_the_same_vehicle(self):
