@@ -109,10 +109,23 @@ class ImageRule(unittest.TestCase):
         strict = Params(fps=60.0, src_size=SRC, min_seconds=0.5)   # needs 30 frames
         self.assertEqual(run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 21))], params=strict), [])
 
-    def test_event_time_is_the_first_frame_of_contact(self):
+    def test_event_time_is_the_contact_start_when_the_pedestrian_is_already_on_the_crosswalk(self):
         strict = Params(fps=60.0, src_size=SRC, min_seconds=0.2)   # needs 12 frames before the event is confirmed
         events = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(5, 31))], params=strict)
         self.assertEqual(events[0].frame, 5)   # the car's first frame on the crosswalk, not frame 16
+        self.assertEqual(events[0].contact_frames, (5, 30))
+
+    def test_pedestrian_who_steps_on_late_in_a_long_contact_counts_and_is_timed_then(self):
+        # the car sits on the crosswalk for 4 s; the pedestrian only steps on 3 s after the contact began, which the
+        # old "1 s around the contact start" window threw away although the pair is real.
+        frames = range(1, 241)
+        steps = {"id": 1, "kind": "person", "boxes":
+                 [[f, 1230, 303, 1290, 603] for f in range(1, 181)] + [[f, 1230, 450, 1290, 750] for f in range(181, 241)]}
+        events = run([steps, track(10, "car", CAR_ON, frames)], frames=frames)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].frame, 181)
+        self.assertEqual(events[0].pedestrian_state, "waiting_at_edge")   # state when the contact began
+        self.assertEqual(events[0].contact_frames, (1, 240))
 
     def test_one_event_per_vehicle_track(self):
         tracks = [track(1, "person", PED_ON, range(1, 31)), track(2, "person", (1350, 700, 1410, 850), range(1, 31)),

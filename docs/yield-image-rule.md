@@ -17,13 +17,18 @@ Segmentation model: facebook/mask2former-swin-large-mapillary-vistas-semantic @ 
 Mapillary Vistas is CC BY-NC-SA: research/demo use only.
 
 Event = a vehicle whose bottom edge is on the same crosswalk blob as a pedestrian (foot on it, or within 0.8 person heights of its
-edge), horizontal gap <= 1.5 vehicle widths, for >= 0.2 s; motorcycle riders/occupants (person box inside a vehicle box) are
+edge), horizontal gap <= 3 vehicle widths (the law is ~3 m / one lane; 1.5 vehicle widths missed motorcycles, whose boxes are
+under a metre wide), for >= 0.2 s; motorcycle riders/occupants (person box inside a vehicle box) are
 excluded; one event per vehicle track.
 **Definition (user decision, 2026-10-13): a pedestrian merely waiting at the edge does not count.** A pedestrian counts only if
-their foot is at least 0.1 person heights inside the crosswalk mask at some frame within 1 s of the contact, so stepping onto the
-crosswalk as a vehicle passes counts and standing still at the edge does not. (Image motion cannot be used: the camera moves.)
-This looks at frames after the contact, so it is an offline review tool. `--include-waiting` disables the filter. The 0.1 threshold
-was chosen between the only two pedestrians seen (0.03 and 0.25 person heights deep): thin evidence, to be revisited with more clips.
+their foot is at least 0.1 person heights inside the crosswalk mask at some frame of the contact with the vehicle (from its
+start to 1 s after it ends), so stepping onto the crosswalk as a vehicle passes counts and standing still at the edge does not.
+Judging the whole contact matters: a slow or late-stepping pedestrian reaches the mask 1.5-2 s after the vehicle's first frame
+on it, and a window around the contact start threw those pairs away. The reported `time_s` is then the frame the pedestrian is
+on the crosswalk (what a human labeller marks); `contact_frames` keeps the whole span. (Image motion cannot be used: the camera
+moves.) This looks at frames after the contact, so it is an offline review tool. `--include-waiting` disables the filter. The 0.1
+threshold was chosen between the only two pedestrians seen (0.03 and 0.25 person heights deep): thin evidence, to be revisited
+with more clips.
 
 ## Real-video result (helmet-cam night clip, 900 frames, 60 fps) — NOT a measured accuracy
 - Near-crosswalk segmentation found the crosswalk in all 18 visually checked frames (even with vehicles/pedestrians occluding).

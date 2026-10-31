@@ -4,8 +4,11 @@ No camera calibration, speed or stabilisation: works with a moving camera. Input
 (from scripts/segment_crosswalk.py) plus person/vehicle boxes with track ids (scripts/track_video.py raw tracks).
 A vehicle "yielding" never enters the crosswalk while a pedestrian is there, so yielding simply produces no event.
 A pedestrian merely waiting at the edge does not count (user decision). A pedestrian counts when they are on the crosswalk
-(foot at least min_inside_person_heights inside the mask) at some frame within entry_window_s of the contact, so stepping on
-as the vehicle passes is caught while standing still at the edge is not. This uses frames after the contact: offline only.
+(foot at least min_inside_person_heights inside the mask) at some frame of the contact, from its start to entry_window_s after
+it ends, so stepping on as the vehicle passes is caught while standing still at the edge is not. Judging the whole contact
+(rather than a window around its start) matters because a slow or late-stepping pedestrian reaches the mask after the
+vehicle's first frame on it. The reported time is then the frame the pedestrian is on the crosswalk, which is what a human
+labeller marks; contact_frames keeps the whole span. This uses frames after the contact: offline only.
 --include-waiting disables that filter; each event records the pedestrian state at contact and whether they entered.
 Output is a candidate for review, not a legal finding.
 """
@@ -30,7 +33,8 @@ class Params:
     min_component_fraction: float = 0.005   # smaller crosswalk blobs are noise or far away
     close_px: int = 15                      # bridges gaps cut by vehicles/pedestrians (mask pixels)
     edge_margin_person_heights: float = 0.8 # a pedestrian this close to the crosswalk is "waiting at the edge"
-    lateral_vehicle_widths: float = 1.5     # pedestrian-to-vehicle gap along the crosswalk axis, in vehicle extents
+    lateral_vehicle_widths: float = 3.0     # pedestrian-to-vehicle gap along the crosswalk axis, in vehicle extents
+                                            # (the law is ~3 m / one lane; 1.5 vehicle widths missed motorcycles entirely)
     min_seconds: float = 0.2                # condition must hold this long
     rider_overlap: float = 0.5              # person box this much inside a motorcycle box = rider, not a pedestrian
     rider_kinds: tuple = ("motorcycle",)    # cars/buses/trucks hide their occupants, so a person overlapping them is a pedestrian
@@ -44,7 +48,7 @@ class Params:
     min_inside_person_heights: float = 0.1   # foot must be this deep inside the mask: mask edges are noisy, and a person
                                              # standing right at the edge is waiting (chosen between the two clips' cases 0.03 and 0.25)
     require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
-    entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk within this window of the contact does
+    entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk during the contact (or this long after it) does
     evidence_s: float = 3.0
 
 
@@ -168,7 +172,8 @@ class Event:
     vehicle_kind: str
     pedestrian_id: int
     pedestrian_state: str          # state in the first qualifying frame
-    pedestrian_entered_crosswalk: bool  # on the crosswalk at some frame within entry_window_s of the contact
+    pedestrian_entered_crosswalk: bool  # on the crosswalk at some frame of the contact
+    contact_frames: tuple          # first/last frame of the vehicle-pedestrian contact that qualified
     evidence_frames: tuple
     needs_review: bool
     review_reasons: list
@@ -178,6 +183,7 @@ class Event:
     def to_dict(self):
         record = asdict(self)
         record["evidence_frames"] = list(self.evidence_frames)
+        record["contact_frames"] = list(self.contact_frames)
         return record
 
 
@@ -190,7 +196,7 @@ def detect(mask_at, tracks, params, frames):
     lengths = {t["id"]: len(t["boxes"]) for t in tracks}
     need = max(1, round(params.min_seconds * params.fps))
     window = round(params.entry_window_s * params.fps)
-    streak, started, candidates, done, deep_frames = {}, {}, [], set(), {}
+    streak, started, contacts, deep_frames, kinds = {}, {}, {}, {}, {}
     for f in frames:
         mask = mask_at(f)
         if mask is None:
@@ -199,7 +205,7 @@ def detect(mask_at, tracks, params, frames):
         here = boxes.get(f, [])
         people = [(i, scaled(b, sx, sy)) for i, k, b in here if k == "person"]
         vehicles = [(i, k, scaled(b, sx, sy)) for i, k, b in here if k in VEHICLE_KINDS]
-        kinds = {i: k for i, k, _ in vehicles}
+        kinds.update({i: k for i, k, _ in vehicles})
         pairs, deep = scan_frame(mask, people, vehicles, params)
         for pid in deep:
             deep_frames.setdefault(pid, []).append(f)
@@ -208,27 +214,29 @@ def detect(mask_at, tracks, params, frames):
             current.setdefault((vid, pid), state)
         for pair in list(streak):
             if pair not in current:
-                del streak[pair]
+                del streak[pair], started[pair]
         for pair, state in current.items():
             streak[pair] = streak.get(pair, 0) + 1
             started.setdefault(pair, (f, state))
-            if streak[pair] >= need and pair not in done:  # one candidate per (vehicle, pedestrian); the crossing filter runs below
-                done.add(pair)
-                reasons = ["short_vehicle_track"] if lengths.get(pair[0], 0) < params.min_track_frames else []
-                candidates.append((started[pair][0], pair, kinds[pair[0]], started[pair][1], reasons))  # time = first frame of contact, not when min_seconds was met
-        for pair in [p for p in started if p not in streak]:
-            del started[pair]
+            if streak[pair] == need:  # first frame at which the contact qualifies: open its span
+                contacts[(pair, started[pair][0])] = [started[pair][0], f, state]
+            elif streak[pair] > need:
+                contacts[(pair, started[pair][0])][1] = f
     events, reported = [], set()
-    for f, (vid, pid), kind, state, reasons in sorted(candidates, key=lambda c: c[0]):
+    for (pair, _), (start, end, state) in sorted(contacts.items(), key=lambda kv: kv[0][1]):
+        vid, pid = pair
         if vid in reported:
             continue  # one event per vehicle: its earliest qualifying pedestrian
-        entered = any(abs(g - f) <= window for g in deep_frames.get(pid, []))
-        if params.require_crossing and not entered:
+        entered_at = [g for g in deep_frames.get(pid, []) if start - window <= g <= end + window]
+        if params.require_crossing and not entered_at:
             continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle)
         reported.add(vid)
+        frame = max(start, min(entered_at)) if entered_at else start
         span = round(params.evidence_s * params.fps)
-        events.append(Event("vehicle_on_crosswalk_with_pedestrian", f, round(f / params.fps, 3), vid, kind, pid, state,
-                            entered, (max(1, f - span), f + span), bool(reasons), reasons))
+        reasons = ["short_vehicle_track"] if lengths.get(vid, 0) < params.min_track_frames else []
+        events.append(Event("vehicle_on_crosswalk_with_pedestrian", frame, round(frame / params.fps, 3), vid,
+                            kinds[vid], pid, state, bool(entered_at), (start, end),
+                            (max(1, frame - span), frame + span), bool(reasons), reasons))
     return events
 
 
