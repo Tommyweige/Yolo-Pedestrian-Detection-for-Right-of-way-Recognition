@@ -11,8 +11,9 @@ vehicle's first frame on it. The reported time is then the frame the pedestrian 
 labeller marks; contact_frames keeps the whole span. This uses frames after the contact: offline only.
 --include-waiting disables that filter; each event records the pedestrian state at contact and whether they entered.
 How contacts become events is a parameter: by default one event per vehicle (its earliest qualifying pedestrian), or with
-`report_every_contact` every (vehicle, pedestrian) contact deduped by vehicle pass. Both are scored by the same
-scripts/eval_rule_events.py, so the two constructions can be compared on one table.
+`report_every_contact` every (vehicle, pedestrian) contact, repeats of one pedestrian inside a pass merged (`contact_dedup`,
+default "pair"). Both are scored by the same scripts/eval_rule_events.py, so the two constructions can be compared on one
+table, but their event counts are not comparable to each other (docs/yield-image-rule.md).
 Output is a candidate for review, not a legal finding.
 """
 import argparse
@@ -58,27 +59,28 @@ class Params:
     foot_window_person_heights: float = 0.3  # half-width of the window around the foot that must be crosswalk
     foot_surround_fraction: float = 0.75     # ... at least this share of it, to count as standing on the crosswalk
     min_track_frames: int = 15
-    min_inside_person_heights: float = 0.04  # foot must be this deep inside the mask: mask edges are noisy, and a person
-                                             # standing right at the edge is waiting. 0.04 is chosen in-sample: on the 7
-                                             # labelled clips incidents go 11/15 at 0.05 and up (and 0.06 is already back
-                                             # at the 0.1 numbers) but 12/15 at 0.03-0.04, so the passing window is a narrow
-                                             # shelf between two cliffs. 0.04 is the middle of that shelf, 0.03 is its edge.
-                                             # It must be re-validated on clips that were not tuned on.
+    min_inside_person_heights: float = 0.03  # foot must be this deep inside the mask: mask edges are noisy, and a person
+                                             # standing right at the edge is waiting. 0.03 is chosen in-sample: on the 7
+                                             # labelled clips incidents go 11/15 at 0.05 and up (0.06 is already back at
+                                             # the 0.1 numbers) and 12/15 with one event per vehicle at 0.03-0.05, but the
+                                             # candidate-list construction (the default) gains its last withheld label and
+                                             # incident only at 0.03 (8/9, 14/15 against 7/9, 13/15 at 0.04). 0.03 is the
+                                             # edge of that passing shelf, not its middle: one step further and recall falls
+                                             # off the cliff. It must be re-validated on clips that were not tuned on.
     report_every_contact: bool = False      # False: one event per vehicle (its earliest qualifying pedestrian). True: report
                                             # every (vehicle, pedestrian) contact and let `contact_dedup` collapse one
                                             # vehicle's pass - the "candidate list" construction, for comparison only.
     contact_dedup_s: float = 1.25           # candidate list only, one pass = a vehicle's contacts chained by report time within
                                             # this window (the evaluation's tolerance, so both constructions are scored alike).
                                             # 0 keeps every contact, which is how the raw candidate count is measured.
-    contact_dedup: str = "earliest"         # candidate list only, which contact of a pass is reported: "earliest" (the
-                                            # first one, what the rule did before this parameter existed),
-                                            # "on_crosswalk_longest" (the pedestrian already standing on the crosswalk for
-                                            # the longest catch, falling back to the first contact; the earliest contact of
-                                            # a pass is not necessarily the one a labeller marks) or "pair" (only repeats of
-                                            # the same (vehicle, pedestrian) pair collapse, so two pedestrians of one
-                                            # pass are two reports). All three are measured in docs/yield-image-rule.md:
-                                            # "earliest" and "on_crosswalk_longest" score the same, "pair" recovers one
-                                            # manual label for 14 duplicate reports, so the default stays "earliest".
+    contact_dedup: str = "pair"             # candidate list only, which contact of a pass is reported: "pair" (the default:
+                                            # only repeats of the same (vehicle, pedestrian) pair collapse, so two
+                                            # pedestrians of one pass are two reports), "earliest" (the pass's first
+                                            # contact) or "on_crosswalk_longest" (the pedestrian already standing on the
+                                            # crosswalk for the longest catch, falling back to the first contact). All
+                                            # three are measured in docs/yield-image-rule.md: "earliest" and
+                                            # "on_crosswalk_longest" score the same and drop a labelled crossing, "pair"
+                                            # recovers it at the price of one report per pedestrian of a pass.
     require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
     entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk during the contact (or this long after it) does
     evidence_s: float = 3.0
@@ -387,11 +389,13 @@ def contact_frames_duration(event):
 
 
 def dedupe_contacts(candidates, params):
-    """The candidate list with one report per vehicle pass, chosen by `params.contact_dedup` (see Params).
+    """The candidate list with repeats of one pedestrian inside a vehicle pass merged, by `params.contact_dedup` (see Params).
 
-    The choice matters because one pass can touch several pedestrians and the earliest contact of a pass is not
-    necessarily the one the law or the labeller cares about: a car crossing while someone waits at the edge and someone
-    else is already walking on the crosswalk has both contacts, and reporting the waiting one costs the crossing one.
+    The default (`pair`) keeps one report per pedestrian of a pass: the earliest contact of a pass is not necessarily the one
+    the law or the labeller cares about, so a car crossing while someone waits at the edge and someone else is already
+    walking on the crosswalk reports both, and the two share the vehicle's pass. Duplicate reports of one physical vehicle
+    are the price of that, and they are expected (docs/yield-image-rule.md) - the duplicate count is only meaningful inside
+    one construction, because the other construction reports one event per vehicle by definition.
     """
     if params.contact_dedup not in CONTACT_DEDUP_VARIANTS:
         raise ValueError(f"contact_dedup must be one of {CONTACT_DEDUP_VARIANTS}, not {params.contact_dedup!r}")

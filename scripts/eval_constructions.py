@@ -2,12 +2,13 @@
 
 `yield_image_rule.Params.report_every_contact` selects how contacts become events: the rule's own construction (one
 event per vehicle) or the candidate list (every (vehicle, pedestrian) contact). The candidate list then has to collapse
-one vehicle's pass, and `contact_dedup` chooses which contact of the pass survives:
+one vehicle's pass, and `contact_dedup` chooses which contact of the pass survives. The defaults run on the candidate
+list with `pair` at depth 0.03; every variant and every depth stays selectable (`--variants`, `--depths`):
 
 - `earliest`             the first contact of the pass (what the rule did before the parameter existed);
 - `on_crosswalk_longest` the pedestrian already on the crosswalk for the longest catch, falling back to the first contact;
 - `pair`                 only repeats of the same (vehicle, pedestrian) pair collapse, so a pass touching two pedestrians
-                         is two reports.
+                         is two reports (the default).
 
 Everything is scored by eval_rule_events.summarise at one tolerance, so the rows are comparable, and one detect pass per
 depth feeds every row (the rule construction is read off the same candidate list: its vehicle's earliest contact, which is
@@ -20,7 +21,8 @@ All numbers are in-sample: the labelled clips are the ones the depth was chosen 
 
 Usage:
   python scripts/eval_constructions.py --videos DIR --masks-root DIR --tracks-root DIR --labels DIR
-                                       --verdicts verdicts.json [--depths 0.03,0.04] [--tolerance 1.25] [--json OUT]
+                                       --verdicts verdicts.json [--depths 0.03] [--variants pair] [--tolerance 1.25]
+                                       [--json OUT]
 """
 import argparse
 import json
@@ -125,11 +127,14 @@ def main(argv=None):
     parser.add_argument("--tracks-root", required=True, help="per-clip <stem>/tracks/raw_tracks.json under here")
     parser.add_argument("--labels", required=True, help="folder of <stem>.jsonl human labels")
     parser.add_argument("--verdicts", help="hand-judged events (clip/stem, time_s, vehicle, ped, verdict) as JSON")
-    parser.add_argument("--depths", default="0.03,0.04", help="min_inside_person_heights values to compare")
+    parser.add_argument("--depths", default="0.03",
+                        help="min_inside_person_heights values to compare (default: the rule's own 0.03)")
     parser.add_argument("--variants", default=",".join(r.CONTACT_DEDUP_VARIANTS), help="contact_dedup values to compare")
     parser.add_argument("--tolerance", type=float, default=1.25, help="matching tolerance in seconds")
     parser.add_argument("--json", help="write the full table here")
     args = parser.parse_args(argv)
+    print(f"rule defaults: depth {r.Params.min_inside_person_heights}, candidate-list dedup "
+          f"{r.Params.contact_dedup!r}", flush=True)
 
     videos_dir, masks_root = Path(args.videos), Path(args.masks_root)
     tracks_root, labels_dir = Path(args.tracks_root), Path(args.labels)
@@ -165,7 +170,8 @@ def main(argv=None):
 
         for name, events_of, emitted_of in (
                 ("one event per vehicle", lambda clip: clip["rule"], lambda clip: clip["rule"]),
-                ("candidate list", lambda clip: deduped(clip, "earliest"), lambda clip: clip["candidates"])):
+                (f"candidate list ({r.Params.contact_dedup})",
+                 lambda clip: deduped(clip, clip["params"].contact_dedup), lambda clip: clip["candidates"])):
             totals = score(collected, events_of, args.tolerance)
             construction_rows.append({"construction": name, "depth": depth,
                                       "events": sum(len(emitted_of(clip)) for clip in collected),

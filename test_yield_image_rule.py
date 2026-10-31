@@ -59,27 +59,28 @@ class ImageRule(unittest.TestCase):
         tracks = [track(1, "person", shallow, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
         self.assertEqual(run(tracks), [])
 
-    # The depth threshold (min_inside_person_heights) is 0.04, the middle of a narrow passing shelf: 0.05 and up lose an
-    # incident and 0.06 is back to the old 0.1 numbers, while 0.03-0.04 both keep it. These three pin the shelf down, one
-    # clear step either side and the boundary itself, so it cannot be moved to a "rounder" number without a test saying
-    # what that costs. The foot sits 3 mask rows inside the crosswalk's top edge on every frame (source boxes are 3x the
-    # mask, so a source height of 222-228 px is 74-76 mask px tall - the range where 3 rows straddles 0.04).
+    # The depth threshold (min_inside_person_heights) is 0.03, the edge of a narrow passing shelf: 0.05 and up lose an
+    # incident and 0.06 is back to the old 0.1 numbers, and the candidate-list construction keeps its last label and
+    # incident only at 0.03. These three pin the shelf down, one clear step either side and the boundary itself, so it
+    # cannot be moved without a test saying what that costs. The foot sits 3 mask rows inside the crosswalk's top edge on
+    # every frame (source boxes are 3x the mask, so a source height of 288-309 px is 96-103 mask px tall - the range where
+    # 3 rows straddles 0.03).
     def test_foot_just_past_the_depth_threshold_counts_as_crossing(self):
-        # 74 mask px tall -> 3/74 = 0.0405 person heights, just over 0.04
-        just_inside = (1230, 384, 1290, 606)
+        # 96 mask px tall -> 3/96 = 0.031, just over 0.03
+        just_inside = (1230, 318, 1290, 606)
         events = run([track(1, "person", just_inside, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
         self.assertEqual([(e.vehicle_id, e.pedestrian_id, e.pedestrian_state) for e in events],
                          [(10, 1, "on_crosswalk")])
 
     def test_foot_just_short_of_the_depth_threshold_is_waiting(self):
-        # 76 mask px tall -> 3/76 = 0.0395 person heights, just under 0.04
-        just_short = (1230, 378, 1290, 606)
+        # 103 mask px tall -> 3/103 = 0.029, just under 0.03
+        just_short = (1230, 297, 1290, 606)
         tracks = [track(1, "person", just_short, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
         self.assertEqual(run(tracks), [])
 
     def test_foot_exactly_at_the_depth_threshold_counts_as_crossing(self):
-        # 75 mask px tall -> 3/75 = 0.04 exactly, and the comparison is inclusive
-        on_the_boundary = (1230, 381, 1290, 606)
+        # 100 mask px tall -> 3/100 = 0.03 exactly, and the comparison is inclusive
+        on_the_boundary = (1230, 306, 1290, 606)
         events = run([track(1, "person", on_the_boundary, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
         self.assertEqual([e.pedestrian_state for e in events], ["on_crosswalk"])
 
@@ -177,8 +178,8 @@ class ImageRule(unittest.TestCase):
         self.assertEqual(len(run(tracks)), 1)
 
     # The candidate-list construction (report_every_contact) is what the paper-side comparison scores, so these two pin
-    # the difference it is meant to make: a vehicle's later contact with a different pedestrian survives when it is a
-    # separate pass, and does not when both contacts belong to the same pass.
+    # what its default dedup (`pair`) is meant to do: repeats of one pedestrian inside one vehicle pass are one report,
+    # two pedestrians of that pass are two reports.
     CANDIDATE = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True)
 
     def test_candidate_list_reports_a_later_contact_of_the_same_vehicle(self):
@@ -191,16 +192,28 @@ class ImageRule(unittest.TestCase):
         self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames, params=self.CANDIDATE)],
                          [(10, 1), (10, 2)])                             # 2 s apart: two passes, two reports
 
-    def test_candidate_list_collapses_contacts_of_one_pass(self):
+    def test_candidate_list_merges_repeats_of_one_pedestrian_in_one_pass(self):
+        # The vehicle leaves the crosswalk for 9 frames, so the same pedestrian is picked up again 1.15 s later: one
+        # pedestrian, one pass, one report, and two contacts in the undeduped list.
+        car = {"id": 10, "kind": "car",
+               "boxes": [[f, *CAR_ON] for f in range(1, 61)] + [[f, *CAR_BEFORE] for f in range(61, 70)]
+               + [[f, *CAR_ON] for f in range(70, 121)]}
+        tracks = [track(1, "person", PED_ON, range(1, 121)), car]
+        frames = range(1, 121)
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames, params=self.CANDIDATE)],
+                         [(10, 1)])
+        raw = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup_s=0)
+        self.assertEqual(len(run(tracks, frames=frames, params=raw)), 2)     # the undeduped candidate list
+
+    def test_candidate_list_reports_two_pedestrians_of_one_pass(self):
+        # 1.15 s apart, so one pass: the default dedup is by (vehicle, pedestrian) pair, so both are reported. The earlier
+        # pedestrian's contact is not a reason to withhold the crossing one (docs/yield-image-rule.md).
         first, second = (1230, 700, 1290, 850), (1350, 700, 1410, 850)
         tracks = [track(1, "person", first, range(1, 61)), track(2, "person", second, range(70, 121)),
                   track(10, "car", CAR_ON, range(1, 121))]
         frames = range(1, 121)
-        self.assertEqual([e.pedestrian_id for e in run(tracks, frames=frames, params=self.CANDIDATE)],
-                         [1])                                            # 1.15 s apart: one pass, one report
-        raw = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup_s=0)
-        self.assertEqual([e.pedestrian_id for e in run(tracks, frames=frames, params=raw)],
-                         [1, 2])                                         # the undeduped candidate list
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames, params=self.CANDIDATE)],
+                         [(10, 1), (10, 2)])
 
     # Which contact of a pass survives is a policy, and one pass can touch two pedestrians: someone who has been waiting at
     # the edge and steps on as the car arrives, and someone already walking across. The three variants must disagree here,
