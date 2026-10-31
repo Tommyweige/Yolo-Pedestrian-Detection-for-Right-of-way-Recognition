@@ -6,8 +6,10 @@
 ## 目前狀態
 
 - **不禮讓**：命令列主流程（`scripts/run_pipeline.py`）可以使用，Windows 與 Linux 皆可，GPU 或 CPU 皆可（CPU 很慢）。
-- **Rust 桌面介面**（`rust-ui/`）是之後的主介面，目前仍接舊的偵測後端；改接新流程、一鍵同時偵測闖紅燈與不禮讓，正在進行中，見
-  [docs/adr/0002-rust-ui-dual-detection-in-two-stages.md](docs/adr/0002-rust-ui-dual-detection-in-two-stages.md)。
+- **Rust 桌面介面**（`rust-ui/`）的「未禮讓行人」模式已改接影像規則，見
+  [docs/adr/0004-gui-yield-image-rule-wiring.md](docs/adr/0004-gui-yield-image-rule-wiring.md)；「闖紅燈」模式仍接舊的偵測後端，
+  一鍵同時偵測兩種模式見 [docs/adr/0002-rust-ui-dual-detection-in-two-stages.md](docs/adr/0002-rust-ui-dual-detection-in-two-stages.md)。
+- 舊的 PyQt5 介面（`start.py --legacy`）已凍結，只保留作專題版本對照，不再開發。
 - **`yield_rules.py`**（世界座標規則）只作實驗用，見
   [docs/adr/0001-image-rule-replaces-world-rule.md](docs/adr/0001-image-rule-replaces-world-rule.md)。
 
@@ -240,6 +242,11 @@ Rust 介面提供影片多選、輸出資料夾、模型選擇、兩種偵測模
 影片播放／暫停／停止／影格定位，以及 -45° 到 45° 的旋轉校正。
 右側先選擇偵測模式、模型與輸出資料夾，再按「開始分析」。影片清單可切換預覽，
 完整路徑與執行記錄可展開查看；右上角可切換深色／淺色外觀。
+「未禮讓行人」模式跑的是影像規則（分割 → 追蹤 → 規則，見
+[docs/adr/0004-gui-yield-image-rule-wiring.md](docs/adr/0004-gui-yield-image-rule-wiring.md)），
+跑完會在影片工作區最上方列出「不禮讓事件」：時間、車輛、行人與是否需複審，點時間即跳到該影片的該影格；
+中間產物與 `events.jsonl`、`run.json` 寫在使用者選的輸出資料夾的 `yield/<影片檔名>/`。
+「闖紅燈」模式仍走舊的 YOLOv8 + DeepSORT 後端。影像規則的輸出與畫面方向無關，因此不套用旋轉校正。
 多選影片時預覽第一部；校正參考影片不會改變偵測清單，按「套用旋轉角度」後才套用於偵測。
 取消偵測會停止 Python 預測程序；若正在旋轉轉檔，會等待轉檔完成才取消。
 預覽使用 Rust 背景執行緒呼叫 Windows Media Foundation 解碼，並將像素直接送至影片紋理；
@@ -291,6 +298,7 @@ python start.py
 cargo check --manifest-path rust-ui/Cargo.toml
 cargo test --manifest-path rust-ui/Cargo.toml
 python test_desktop_bridge.py
+python test_yield_pipeline.py
 python test_traffic_rules.py
 pwsh -File rust-ui/check-ui.ps1 -Python python
 ```

@@ -167,6 +167,7 @@ struct Desktop {
     status: String,
     error: Option<String>,
     logs: String,
+    events: Vec<Event>,
     screenshot: Option<PathBuf>,
     screenshot_requested: bool,
     check_playback: bool,
@@ -211,6 +212,7 @@ impl Default for Desktop {
             status: "選擇影片與輸出資料夾即可開始。".into(),
             error: None,
             logs: String::new(),
+            events: Vec::new(),
             screenshot: std::env::var_os("TRAFFIC_SCREENSHOT").map(PathBuf::from),
             screenshot_requested: false,
             check_playback: false,
@@ -387,6 +389,71 @@ fn timestamp(frame: u64, fps: f64) -> String {
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
 
+/// One 不禮讓 event from the image rule, as the Python side reports it.
+#[derive(Clone, Debug)]
+struct Event {
+    video: PathBuf,
+    video_name: String,
+    frame: u64,
+    time_s: f64,
+    vehicle: String,
+    pedestrian: String,
+    needs_review: bool,
+}
+
+impl Event {
+    /// Read one `{"type": "event", ...}` line; a malformed one is reported as a log line instead.
+    fn from_protocol(value: &Value) -> Option<Self> {
+        let video = PathBuf::from(value.get("video")?.as_str()?);
+        let time_s = value.get("time_s")?.as_f64()?;
+        let frame = value.get("frame")?.as_u64()?;
+        let kind = value.get("vehicle_kind").and_then(Value::as_str).unwrap_or("");
+        let vehicle_id = value.get("vehicle_id").and_then(Value::as_i64).unwrap_or_default();
+        let pedestrian_id = value.get("pedestrian_id").and_then(Value::as_i64).unwrap_or_default();
+        let state = match value.get("pedestrian_state").and_then(Value::as_str) {
+            Some("on_crosswalk") => "在斑馬線上",
+            Some("waiting_at_edge") => "在路邊等",
+            _ => "狀態未知",
+        };
+        let entered = value
+            .get("pedestrian_entered_crosswalk")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let pedestrian = if entered {
+            format!("行人 #{pedestrian_id} {state}（踏上斑馬線）")
+        } else {
+            format!("行人 #{pedestrian_id} {state}")
+        };
+        Some(Self {
+            video_name: value
+                .get("video_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| path_name(&video)),
+            video,
+            frame,
+            time_s,
+            vehicle: format!("{kind} #{vehicle_id}"),
+            pedestrian,
+            needs_review: value
+                .get("needs_review")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
+
+    fn clock(&self) -> String {
+        let minutes = (self.time_s / 60.0).floor();
+        let seconds = self.time_s - minutes * 60.0;
+        format!("{:02}:{:06.3}", minutes as u64, seconds)
+    }
+
+    /// The frame to show: the rule counts frames from one, the player from zero.
+    fn player_frame(&self) -> u64 {
+        self.frame.saturating_sub(1)
+    }
+}
+
 fn section_label(ui: &mut egui::Ui, text: &str, palette: Palette) {
     ui.label(egui::RichText::new(text).size(12.0).color(palette.muted));
 }
@@ -507,16 +574,21 @@ impl Desktop {
                     }
                 }
                 ui.add_space(6.0);
-                section_label(ui, "模型", palette);
-                let labels = ["YOLOv8s  ·  輕量", "YOLOv8l  ·  標準", "YOLOv8x6  ·  大型"];
-                egui::ComboBox::from_id_salt("model")
-                    .width(ui.available_width() - 28.0)
-                    .selected_text(labels[self.model])
-                    .show_ui(ui, |ui| {
-                        for (index, label) in labels.iter().enumerate() {
-                            ui.selectable_value(&mut self.model, index, *label);
-                        }
-                    });
+                if self.task == 0 {
+                    section_label(ui, "模型", palette);
+                    let labels = ["YOLOv8s  ·  輕量", "YOLOv8l  ·  標準", "YOLOv8x6  ·  大型"];
+                    egui::ComboBox::from_id_salt("model")
+                        .width(ui.available_width() - 28.0)
+                        .selected_text(labels[self.model])
+                        .show_ui(ui, |ui| {
+                            for (index, label) in labels.iter().enumerate() {
+                                ui.selectable_value(&mut self.model, index, *label);
+                            }
+                        });
+                } else {
+                    section_label(ui, "模型", palette);
+                    section_label(ui, "YOLO26n 偵測器 ＋ 斑馬線分割模型", palette);
+                }
                 ui.add_space(6.0);
                 section_label(ui, "輸出位置", palette);
                 if ui
@@ -570,7 +642,7 @@ impl Desktop {
                 let ready =
                     !self.videos.is_empty() && self.output.is_some() && self.picker.is_none();
                 if primary_button(ui, "開始分析", ready, palette).clicked() {
-                    self.start_detection(if self.task == 0 { "tf" } else { "zebra" });
+                    self.start_detection(self.selected_task());
                 }
                 if !ready {
                     section_label(ui, "先匯入影片並選擇輸出資料夾", palette);
@@ -639,6 +711,68 @@ impl Desktop {
                 });
             });
         });
+        if !self.calibration && !self.events.is_empty() {
+            let rows = self.events.clone();
+            let mut selected = None;
+            card(palette).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("不禮讓事件").size(16.0).strong());
+                    section_label(
+                        ui,
+                        &format!("{} 件 · 點時間跳到該影格 · 僅供輔助判斷", rows.len()),
+                        palette,
+                    );
+                });
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .id_salt("yield_events")
+                    .show(ui, |ui| {
+                        for (index, event) in rows.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(egui::Button::selectable(false, event.clock()))
+                                    .on_hover_text(format!(
+                                        "{}\n影格 {}",
+                                        event.video.display(),
+                                        event.frame
+                                    ))
+                                    .clicked()
+                                {
+                                    selected = Some(index);
+                                }
+                                if event.needs_review {
+                                    section_label(ui, "需複審", palette);
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&event.video_name)
+                                                    .size(11.0)
+                                                    .color(palette.muted),
+                                            )
+                                            .truncate(),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(format!(
+                                                "{} · {}",
+                                                event.vehicle, event.pedestrian
+                                            ))
+                                            .truncate(),
+                                        );
+                                    },
+                                );
+                            });
+                        }
+                    });
+            });
+            if let Some(index) = selected {
+                self.jump_to(index);
+            }
+            ui.add_space(10.0);
+        }
         ui.add_space(10.0);
         card(palette).inner_margin(16).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -917,10 +1051,34 @@ impl Desktop {
                 self.single_progress = 0.0;
                 self.batch_progress = 0.0;
                 self.logs.clear();
+                self.events.clear();
                 self.status = "正在準備偵測…".into();
             }
             Err(error) => self.error = Some(error),
         }
+    }
+
+    /// What 開始分析 asks the backend for: 0 runs the legacy 闖紅燈 predictor, 1 the 不禮讓 image rule.
+    fn selected_task(&self) -> &'static str {
+        if self.task == 0 { "tf" } else { "yield" }
+    }
+
+    /// Show the video and frame of one event; a batch can hold events from several videos.
+    fn jump_to(&mut self, index: usize) {
+        let Some(event) = self.events.get(index).cloned() else {
+            return;
+        };
+        if self.preview_path.as_ref() != Some(&event.video) {
+            self.open_preview(event.video.clone());
+        }
+        self.playing = false;
+        self.frame = if self.count > 0 {
+            event.player_frame().min(self.count - 1)
+        } else {
+            event.player_frame()
+        };
+        self.dirty = true;
+        self.status = format!("已跳到 {}（{}）", event.clock(), event.vehicle);
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
@@ -1012,8 +1170,24 @@ impl Desktop {
                     self.batch_progress = (index / self.videos.len().max(1) as f32).clamp(0.0, 1.0);
                     self.status = event["message"].as_str().unwrap_or("").into();
                 }
+                "event" => match Event::from_protocol(&event) {
+                    Some(parsed) => {
+                        self.status = format!("發現事件：{} {}", parsed.clock(), parsed.vehicle);
+                        self.events.push(parsed);
+                    }
+                    None => self.append_log(&format!("無法解析事件：{event}")),
+                },
                 "done" => {
-                    self.status = "影片處理完成，請至輸出資料夾查看結果。".into();
+                    self.status = if self.task == 0 {
+                        "影片處理完成，請至輸出資料夾查看結果。".into()
+                    } else if self.events.is_empty() {
+                        "影片處理完成，沒有偵測到不禮讓事件。".into()
+                    } else {
+                        format!(
+                            "影片處理完成：{} 件未禮讓事件，點事件列可跳到該時間點。",
+                            self.events.len()
+                        )
+                    };
                     self.single_progress = 1.0;
                     self.batch_progress = 1.0;
                     self.detection = None;
@@ -1057,7 +1231,7 @@ impl eframe::App for Desktop {
         self.poll(ctx);
         if self.check_detection && !self.detection_check_started && self.texture.is_some() {
             self.detection_check_started = true;
-            self.start_detection("zebra");
+            self.start_detection(self.selected_task());
         }
         if self.check_folder && self.texture.is_some() {
             if self.folder_updates == 0 {
@@ -1102,6 +1276,11 @@ impl eframe::App for Desktop {
                     std::fs::write(path.with_extension("json"), json!({
                         "batch_progress": self.batch_progress, "single_progress": self.single_progress,
                         "status": self.status, "error": self.error,
+                        "events": self.events.iter().map(|e| json!({
+                            "video": e.video, "frame": e.frame, "time_s": e.time_s,
+                            "vehicle": e.vehicle, "pedestrian": e.pedestrian,
+                            "needs_review": e.needs_review
+                        })).collect::<Vec<_>>(),
                         "elapsed_seconds": self.started.elapsed().as_secs_f64()
                     }).to_string()).expect("Save detection check");
                 }
@@ -1395,6 +1574,43 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
+
+    #[test]
+    fn event_line_becomes_a_list_entry() {
+        let line = json!({
+            "type": "event", "index": 0,
+            "video": "E:/videos/clip.mp4", "video_name": "clip.mp4",
+            "frame": 418, "time_s": 6.974,
+            "vehicle_kind": "car", "vehicle_id": 12,
+            "pedestrian_id": 3, "pedestrian_state": "on_crosswalk",
+            "pedestrian_entered_crosswalk": true, "needs_review": false
+        });
+        let event = Event::from_protocol(&line).expect("Protocol event should parse");
+        assert_eq!(event.clock(), "00:06.974");
+        assert_eq!(event.player_frame(), 417);
+        assert_eq!(event.vehicle, "car #12");
+        assert!(event.pedestrian.contains("踏上斑馬線"));
+        assert!(Event::from_protocol(&json!({"type": "event"})).is_none());
+    }
+
+    #[test]
+    fn clicking_an_event_opens_its_video_at_the_rule_frame() {
+        let mut desktop = Desktop::default();
+        desktop.events.push(Event {
+            video: PathBuf::from("missing.mp4"),
+            video_name: "missing.mp4".into(),
+            frame: 419,
+            time_s: 6.99,
+            vehicle: "car #1288".into(),
+            pedestrian: "行人 #665 在路邊等".into(),
+            needs_review: false,
+        });
+        desktop.jump_to(0);
+        // The rule reports frame 419 one-based; the player seeks to 418.
+        assert_eq!(desktop.frame, 418);
+        assert_eq!(desktop.preview_path, Some(PathBuf::from("missing.mp4")));
+    }
+
     #[test]
     fn open_picker_does_not_block_the_ui() {
         let started = Instant::now();
