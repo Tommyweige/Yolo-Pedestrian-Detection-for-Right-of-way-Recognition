@@ -9,7 +9,7 @@ All profiles use the verified torch 2.13.0+cu130 / torchvision 0.28.0+cu130 pair
 
 | Profile | Core versions | Purpose |
 |---|---|---|
-| legacy | Ultralytics 8.0.3, NumPy 1.26.4, OpenCV 4.11.0.86, MoviePy 1.0.3, setuptools 80.10.2 | Existing Hydra/BasePredictor, DeepSORT, GUI bridge, optional PyQt5 |
+| legacy | Ultralytics 8.0.3, NumPy 1.26.4, OpenCV 4.11.0.86, MoviePy 1.0.3, setuptools 80.10.2 | Existing Hydra/BasePredictor, DeepSORT, GUI bridge |
 | labeling | Autodistill 0.1.29, Grounding DINO plugin 0.1.4, rf-groundingdino 0.1.2, rf-segment-anything 1.0, transformers 4.44.2, supervision 0.25.1 | Dependency and one-image forward checks only |
 | modern | Ultralytics 8.4.175, NumPy 2.2.6, OpenCV 4.12.0.88 | Verified YOLO26n construction and official-weight CUDA forward; no training or GUI adapter |
 
@@ -42,8 +42,6 @@ Do not use a labeling or modern interpreter to launch the current detection work
 $legacyPython = Join-Path $envRoot 'legacy\Scripts\python.exe'
 $env:TRAFFIC_PYTHON = $legacyPython # explicit: start.py may otherwise prefer the existing detection-env
 & $legacyPython start.py
-# Optional original UI, using the same legacy interpreter:
-& $legacyPython start.py --legacy
 ```
 
 The existing `runtime/detection-env` and its installed packages are not upgraded. Its inherited ml-dtypes/NumPy conflict is recorded separately; clean legacy has no inherited packages and passes `pip check`.

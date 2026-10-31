@@ -45,9 +45,6 @@ psutil==7.2.2
 pure_eval==0.2.4
 Pygments==2.21.0
 pyparsing==3.3.3
-PyQt5==5.15.11
-PyQt5-Qt5==5.15.2
-PyQt5_sip==12.20.0
 python-dateutil==2.9.0.post0
 PyYAML==6.0.3
 requests==2.34.2
