@@ -240,7 +240,7 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 ## 9. 已知限制
 
-1. **PyQt5 無法安裝**：PyPI 沒有 aarch64 wheel，sdist 需要 `qmake` 與 `g++`；此機沒有、也沒有 sudo。`python start.py --legacy` 直接 `ModuleNotFoundError: No module named 'PyQt5'`。
+1. **PyQt5 舊版 GUI 已移除**：舊版介面原本需要 PyQt5，但 PyPI 沒有 aarch64 wheel，sdist 又需要 `qmake` 與 `g++`，這台兩者都沒有。該介面已從 main 移除，完整快照見 branch `university-project-pyqt5`。
 2. **Rust 介面不可用**：沒有安裝 `cargo`，`python start.py` 只印「請先執行 cargo build --manifest-path rust-ui/Cargo.toml」。`rust-ui/src/video.rs` 的原生影片預覽以 `#[cfg(windows)]` 包住，ADR 0002 也只承諾 Windows。
 3. **`ckpt.t7` 對兩種模式都是硬需求**：連闖紅燈模式也會在 `init_tracker()` 停下。權重現在可匿名下載，但缺檔就是直接失敗，不會退回無追蹤模式。
 4. **CPU 上的預設參數不實用**：`augment=True` 與 `imgsz=width` 都寫死在後端；1080p 只有 0.28 fps。要調整得改程式，不在本文件範圍。
@@ -249,8 +249,7 @@ export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 ## 10. 要讓它在這台機器上真正跑起來，最少需要什麼
 
-1. Python 3.12 + 第 3 節的 pip 安裝指令（**不要**裝 PyQt5）。
+1. Python 3.12 + 第 3 節的 pip 安裝指令。
 2. 用第 4 節的 `curl` 指令下載權重（公開、免登入），放進 `weights/`，或設 `YOLO_WEIGHTS_DIR`、`DEEPSORT_REID_CKPT`。
-3. 用 `scripts/validate_detection.py` 當唯一入口（避開兩個 GUI）；`--task zebra` 與 `--task tf` 都已實測跑完。
+3. 用 `scripts/validate_detection.py` 當唯一入口（避開 GUI）；`--task zebra` 與 `--task tf` 都已實測跑完。
 4. 接受 CPU 速度：1080p 約 0.28 fps。若要實用，必須調降 `imgsz`、關閉 `augment`（需要改 `detection_backend.py`）。
-5. 只有在需要舊 GUI 時，才需要 root 安裝 Qt5 開發套件與 `g++` 後自行建置 PyQt5（此機無 sudo，**未實測**）。
