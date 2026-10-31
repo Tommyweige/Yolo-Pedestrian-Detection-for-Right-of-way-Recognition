@@ -202,6 +202,55 @@ class ImageRule(unittest.TestCase):
         self.assertEqual([e.pedestrian_id for e in run(tracks, frames=frames, params=raw)],
                          [1, 2])                                         # the undeduped candidate list
 
+    # Which contact of a pass survives is a policy, and one pass can touch two pedestrians: someone who has been waiting at
+    # the edge and steps on as the car arrives, and someone already walking across. The three variants must disagree here,
+    # or the rule cannot tell them apart. The waiting one's event time is the frame they step on (16), which is earlier
+    # than the crossing one's contact (20), so "earliest" picks the waiting contact.
+    WAITING_THEN_STEPPING = {"id": 1, "kind": "person", "boxes":
+                             [[f, 1230, 480, 1290, 585] for f in range(1, 16)]     # foot above the edge: waiting
+                             + [[f, *PED_ON] for f in range(16, 41)]}              # steps on at frame 16
+    ALREADY_CROSSING = (1350, 700, 1410, 850)
+
+    def pass_tracks(self, second):
+        return [self.WAITING_THEN_STEPPING, second, track(10, "car", CAR_ON, range(1, 41))]
+
+    def variant(self, name):
+        return Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup=name)
+
+    def test_dedup_earliest_keeps_the_first_contact_of_the_pass(self):
+        second = track(2, "person", self.ALREADY_CROSSING, range(20, 41))
+        events = run(self.pass_tracks(second), frames=range(1, 41), params=self.variant("earliest"))
+        self.assertEqual([(e.pedestrian_id, e.pedestrian_state, e.time_s) for e in events],
+                         [(1, "waiting_at_edge", round(16 / 60, 3))])
+
+    def test_dedup_prefers_the_pedestrian_on_the_crosswalk_over_the_earlier_contact(self):
+        second = track(2, "person", self.ALREADY_CROSSING, range(20, 41))
+        events = run(self.pass_tracks(second), frames=range(1, 41), params=self.variant("on_crosswalk_longest"))
+        self.assertEqual([(e.pedestrian_id, e.pedestrian_state) for e in events], [(2, "on_crosswalk")])
+
+    def test_dedup_preferring_the_crosswalk_falls_back_to_the_first_contact(self):
+        # both pedestrians start out waiting, so nothing is on the crosswalk at contact start: the pass keeps its first
+        waiting_too = {"id": 2, "kind": "person", "boxes":
+                       [[f, 1230, 480, 1290, 585] for f in range(20, 26)] + [[f, *self.ALREADY_CROSSING] for f in range(26, 41)]}
+        events = run(self.pass_tracks(waiting_too), frames=range(1, 41), params=self.variant("on_crosswalk_longest"))
+        self.assertEqual([e.pedestrian_id for e in events], [1])
+
+    def test_dedup_by_pair_keeps_both_pedestrians_of_one_pass(self):
+        second = track(2, "person", self.ALREADY_CROSSING, range(20, 41))
+        events = run(self.pass_tracks(second), frames=range(1, 41), params=self.variant("pair"))
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1), (10, 2)])
+
+    def test_pass_chains_so_a_slow_crossing_stays_one_report(self):
+        # Three pedestrians of one vehicle 1.17 s apart: no contact is more than the window from the next, but the first
+        # and the last are 2.3 s apart. The pass is a chain, so this is one crossing and one report; measuring the window
+        # from the first contact instead would call it two passes and report the 3.25 s pedestrian again.
+        slow = [track(1, "person", PED_ON, range(55, 63)), track(2, "person", PED_ON, range(125, 133)),
+                track(3, "person", PED_ON, range(195, 203)), track(10, "car", CAR_ON, range(1, 221))]
+        events = run(slow, frames=range(1, 221), params=self.variant("earliest"))
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+        raw = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup_s=0)
+        self.assertEqual([e.pedestrian_id for e in run(slow, frames=range(1, 221), params=raw)], [1, 2, 3])
+
     def test_short_vehicle_track_is_marked_for_review(self):
         events = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 13))])  # 12 < 15 frames
         self.assertEqual(events[0].review_reasons, ["short_vehicle_track"])

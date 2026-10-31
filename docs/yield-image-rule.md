@@ -46,30 +46,74 @@ clips that did not take part in that sweep before the number can be called anyth
 
 ## Two event constructions, one table (2026-10-31, in-sample)
 How contacts become events is a construction choice, not a threshold, so both constructions are measured by the same script
-(`scripts/eval_constructions.py`, 7 clips, tolerance 1.25 s, same scorer as `eval_rule_events.py`) and only these four rows
-are quoted anywhere:
+(`scripts/eval_constructions.py`, 7 clips, tolerance 1.25 s, same scorer as `eval_rule_events.py`, one detect pass per depth
+feeding every row below), and only these rows are quoted anywhere:
 
 | construction | depth | events | after the pass collapse | manual | confirmed | incident recall | duplicate reports | precision |
 |---|---|---|---|---|---|---|---|---|
 | one event per vehicle (default) | 0.10 | 28 | 28 | 5/9 | 7/8 | 11/15 | 0 | 0.429 |
-| candidate list | 0.10 | 53 | 32 | 5/9 | 7/8 | 11/15 | 0 | 0.375 |
+| candidate list | 0.10 | 53 | 31 | 5/9 | 7/8 | 11/15 | 0 | 0.387 |
 | one event per vehicle (default) | 0.04 | 31 | 31 | 6/9 | 7/8 | 12/15 | 0 | 0.419 |
-| candidate list | 0.04 | 72 | 37 | 6/9 | 7/8 | 12/15 | 0 | 0.351 |
+| candidate list | 0.04 | 72 | 35 | 6/9 | 7/8 | 12/15 | 0 | 0.371 |
+| one event per vehicle (default) | 0.03 | 31 | 31 | 6/9 | 7/8 | 12/15 | 0 | 0.419 |
+| candidate list | 0.03 | 74 | 36 | 7/9 | 7/8 | 13/15 | 0 | 0.389 |
 
 - The candidate list (`report_every_contact`) reports every (vehicle, pedestrian) contact and then merges one vehicle's
-  contacts within `contact_dedup_s` (1.25 s, the evaluation's own tolerance) into one report. "events" is what it emits
-  before that merge; every other column is scored after it. Because the merge uses the scoring tolerance, duplicate reports
-  are 0 by construction and cannot be compared between the two constructions.
-- At label level it buys nothing here: the same manual hits, the same confirmed hits and the same incident recall at both
-  depths, for 4-6 more reports and precision down 0.05-0.07. What the extra reports contain, at 0.04: 6 events over the
-  default construction, of which one is the clip 5 pair at 27.4 s (v188/p294, a real failure judged A) that the
-  one-event-per-vehicle collapse swallows because that vehicle had already reported another pedestrian at 23.2 s; one is the
-  same clip 7 contact reported again 1.4 s later (just outside the merge window); four match no judged event.
-- Clip 5 is where the depth matters most, and no construction fixes it. Dropping the depth from 0.1 to 0.04 moves the
-  reported frame of the same contacts 2.7 s and 4.2 s earlier ("first frame on the crosswalk" arrives sooner as the shallow
-  edge starts to count), which puts both events 1.6-1.9 s away from the human labels at 8.9 s and 21.7 s, outside the 1.25 s
-  tolerance. Both are still reported, at times the labeller did not mark: the depth threshold and the event's timestamp are
-  coupled, which is why recall does not improve monotonically as the depth goes down.
+  pass. A pass is that vehicle's contacts chained by report time within `contact_dedup_s` (1.25 s, the evaluation's own
+  tolerance); "events" is what it emits before the merge and every other column is scored after it. Because the merge uses
+  the scoring tolerance, duplicate reports are 0 by construction and cannot be compared between the two constructions.
+- At label level the candidate list buys nothing at 0.10 and 0.04 (identical manual, confirmed and incident numbers for
+  3-4 more reports, precision down 0.04-0.05) and one label at 0.03, where it recovers clip 5's 21.667 s label (7/9, 13/15)
+  because that contact reports at 22.8 s there instead of 23.2 s. Which contact of a pass survives is a separate decision,
+  measured in the next section.
+- Clip 5 is where the depth and the reported time are coupled: from 0.1 to 0.04 the same contacts report 2.7 s and 4.2 s
+  earlier ("first frame on the crosswalk" arrives sooner once the shallow edge counts), which leaves the 8.9 s and 21.7 s
+  labels 1.9 s and 1.6 s from the nearest report, outside the 1.25 s tolerance. At 0.03 the 21.667 s contact reports at
+  22.8 s (1.13 s away) and that label is hit again; the 8.9 s label needs a different contact, see the next section.
+- The candidate list is a comparison construction only: the CLI does not expose it, `eval_constructions.py` drives it.
+
+## Which contact of a pass survives (2026-10-31, in-sample)
+`Params.contact_dedup` decides which report stands for a vehicle's pass. The rule's own construction makes the same choice
+implicitly (one event per vehicle = that vehicle's first qualifying contact), so this is not a candidate-list detail. Three
+choices, same script, same scorer, both depths:
+
+| variant | depth | raw | after collapse | manual | confirmed | incident recall | duplicate reports | precision | dropped by the collapse but a judged event |
+|---|---|---|---|---|---|---|---|---|---|
+| `earliest` (default) | 0.10 | 53 | 31 | 5/9 | 7/8 | 11/15 | 0 | 0.387 | 13 contacts (A12/C1) on 6 judged events, 0 unreported |
+| `on_crosswalk_longest` | 0.10 | 53 | 31 | 5/9 | 7/8 | 11/15 | 0 | 0.387 | 14 (A12/B1/C1) on 7, 0 unreported |
+| `pair` | 0.10 | 53 | 38 | 5/9 | 8/8 | 11/15 | 7 | 0.342 | 8 (A7/C1) on 6, 0 unreported |
+| `earliest` (default) | 0.04 | 72 | 35 | 6/9 | 7/8 | 12/15 | 0 | 0.371 | 24 (A17/B1/C6) on 8, 1 unreported |
+| `on_crosswalk_longest` | 0.04 | 72 | 35 | 6/9 | 7/8 | 12/15 | 0 | 0.371 | 25 (A17/B2/C6) on 9, 1 unreported |
+| `pair` | 0.04 | 72 | 49 | 7/9 | 8/8 | 13/15 | 14 | 0.306 | 12 (A9/C3) on 7, 0 unreported |
+| `earliest` (default) | 0.03 | 74 | 36 | 7/9 | 7/8 | 13/15 | 0 | 0.389 | 24 (A17/B1/C6) on 8, 1 unreported |
+| `on_crosswalk_longest` | 0.03 | 74 | 36 | 7/9 | 7/8 | 13/15 | 0 | 0.389 | 25 (A17/B2/C6) on 9, 1 unreported |
+| `pair` | 0.03 | 74 | 50 | 8/9 | 8/8 | 14/15 | 14 | 0.320 | 12 (A9/C3) on 7, 0 unreported |
+
+The last column is measured against the hand-judged table (`verdicts_after.json`, 28 events, A15/B3/C6/D4): a dropped
+contact counts when it names the same vehicle and pedestrian within 5 s of a judged event, or the same vehicle within the
+scoring tolerance; "unreported" counts judged events that no surviving report matches any more.
+
+- `on_crosswalk_longest` is the same rule as `earliest` in every scored column at every depth and discards one more judged
+  contact (25 vs 24): the pedestrian already on the crosswalk is usually the earlier one of the pass, so preferring it adds
+  a preference without changing a report. Not adopted.
+- `pair` (only repeats of the same vehicle-pedestrian pair collapse) is the only variant that moves a label: it recovers
+  clip 5's 8.9 s manual label at both depths (6/9 -> 7/9 at 0.04, 7/9 -> 8/9 at 0.03, one more incident each) and cuts the
+  A contacts it discards from 17 to 9. It pays with one report per pedestrian of a pass: 14 duplicate reports at both
+  depths, precision 0.371 -> 0.306 and 0.389 -> 0.320. One manual label and one incident for 14 extra reports.
+- Where the collapse really loses a label: clip 5. Vehicle 27 touches p3 at 7.0 s (`on_crosswalk`) and p2 at 8.2 s
+  (`waiting_at_edge`) 1.2 s apart, and the human label is 8.9 s. `earliest` keeps 7.0 s and drops 8.2 s, leaving the label
+  1.9 s from the only report; it is the pass collapse, not detection (the contact exists at 8.2 s) and not the depth (0.03
+  has the same two contacts there). `pair` keeps both, and the label is hit 0.7 s away.
+- Where a dropped contact costs nothing: clip 3. v2299 has contacts at 41.333 s and 42.2 s; `earliest` keeps 41.333 s and
+  drops the 42.2 s ones, but the labels at 41.2/41.867/42.2 s are one incident inside the tolerance and 41.333 s reports it.
+  Most of the 24 dropped-but-judged contacts are like this: they sit on a judged event that another report of the pass still
+  covers.
+- The one judged event the collapse leaves unreported (`earliest` and `on_crosswalk_longest`, both depths) is clip 7's
+  27.68 s, verdict B: vehicle 3586 touches p3496 at 26.08 s and p3570 at 26.8 s, `earliest` keeps 26.08 s and the judged B
+  ends up 1.6 s from any report. `pair` reports both.
+- Consequence: the default construction stays one event per vehicle and the dedup default stays `earliest`. `pair` buys one
+  manual label and one incident for 14 duplicate reports on these 7 clips; that trade is a product decision, and since it is
+  a construction question rather than a threshold one it has to be re-checked on clips that did not take part in this table.
 
 ## Real-video result (helmet-cam night clip, 900 frames, 60 fps) — NOT a measured accuracy
 - Near-crosswalk segmentation found the crosswalk in all 18 visually checked frames (even with vehicles/pedestrians occluding).

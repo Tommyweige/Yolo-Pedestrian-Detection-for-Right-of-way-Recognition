@@ -65,11 +65,20 @@ class Params:
                                              # shelf between two cliffs. 0.04 is the middle of that shelf, 0.03 is its edge.
                                              # It must be re-validated on clips that were not tuned on.
     report_every_contact: bool = False      # False: one event per vehicle (its earliest qualifying pedestrian). True: report
-                                            # every (vehicle, pedestrian) contact and let `contact_dedup_s` collapse one
+                                            # every (vehicle, pedestrian) contact and let `contact_dedup` collapse one
                                             # vehicle's pass - the "candidate list" construction, for comparison only.
-    contact_dedup_s: float = 1.25           # candidate list only: contacts of one vehicle this close in time are one report
-                                            # (the evaluation's tolerance, so both constructions are scored alike). 0 keeps
-                                            # every contact, which is how the raw candidate count is measured.
+    contact_dedup_s: float = 1.25           # candidate list only, one pass = a vehicle's contacts chained by report time within
+                                            # this window (the evaluation's tolerance, so both constructions are scored alike).
+                                            # 0 keeps every contact, which is how the raw candidate count is measured.
+    contact_dedup: str = "earliest"         # candidate list only, which contact of a pass is reported: "earliest" (the
+                                            # first one, what the rule did before this parameter existed),
+                                            # "on_crosswalk_longest" (the pedestrian already standing on the crosswalk for
+                                            # the longest catch, falling back to the first contact; the earliest contact of
+                                            # a pass is not necessarily the one a labeller marks) or "pair" (only repeats of
+                                            # the same (vehicle, pedestrian) pair collapse, so two pedestrians of one
+                                            # pass are two reports). All three are measured in docs/yield-image-rule.md:
+                                            # "earliest" and "on_crosswalk_longest" score the same, "pair" recovers one
+                                            # manual label for 14 duplicate reports, so the default stays "earliest".
     require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
     entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk during the contact (or this long after it) does
     evidence_s: float = 3.0
@@ -354,6 +363,56 @@ class Event:
         return record
 
 
+CONTACT_DEDUP_VARIANTS = ("earliest", "on_crosswalk_longest", "pair")
+
+
+def contact_passes(candidates, params):
+    """[[candidate event]]: one vehicle's contacts grouped into passes, a pass continuing while the next contact is within
+    `contact_dedup_s` of the previous one. Contacts of *different* vehicles never group, so a pass stays one vehicle's
+    crossing, and a slow crossing whose contacts chain past the window still counts as one pass."""
+    passes, current = [], {}
+    for event in sorted(candidates, key=lambda e: e.time_s):
+        group = current.get(event.vehicle_id)
+        if group is not None and event.time_s - group[-1].time_s <= params.contact_dedup_s:
+            group.append(event)
+        else:
+            group = [event]
+            passes.append(group)
+            current[event.vehicle_id] = group
+    return passes
+
+
+def contact_frames_duration(event):
+    return event.contact_frames[1] - event.contact_frames[0]
+
+
+def dedupe_contacts(candidates, params):
+    """The candidate list with one report per vehicle pass, chosen by `params.contact_dedup` (see Params).
+
+    The choice matters because one pass can touch several pedestrians and the earliest contact of a pass is not
+    necessarily the one the law or the labeller cares about: a car crossing while someone waits at the edge and someone
+    else is already walking on the crosswalk has both contacts, and reporting the waiting one costs the crossing one.
+    """
+    if params.contact_dedup not in CONTACT_DEDUP_VARIANTS:
+        raise ValueError(f"contact_dedup must be one of {CONTACT_DEDUP_VARIANTS}, not {params.contact_dedup!r}")
+    if params.contact_dedup_s <= 0:
+        return list(candidates)   # the raw candidate list
+    kept = []
+    for group in contact_passes(candidates, params):
+        if params.contact_dedup == "pair":
+            seen = set()
+            for event in group:            # one report per (vehicle, pedestrian) pair; pedestrians are not merged
+                if event.pedestrian_id not in seen:
+                    seen.add(event.pedestrian_id)
+                    kept.append(event)
+        elif params.contact_dedup == "on_crosswalk_longest":
+            on = [event for event in group if event.pedestrian_state == "on_crosswalk"]
+            kept.append(max(on, key=contact_frames_duration) if on else group[0])
+        else:
+            kept.append(group[0])
+    return sorted(kept, key=lambda e: e.time_s)
+
+
 def detect(mask_at, tracks, params, frames):
     """mask_at(frame) -> bool array; tracks: list of {"id","kind","boxes":[[frame,x1,y1,x2,y2],...]}."""
     if params.merge_duplicates:                        # one vehicle per track, so it can be reported once
@@ -393,25 +452,26 @@ def detect(mask_at, tracks, params, frames):
                 contacts[(pair, started[pair][0])] = [started[pair][0], f, state]
             elif streak[pair] > need:
                 contacts[(pair, started[pair][0])][1] = f
-    events, reported = [], {}
+    candidates = []
     for (pair, _), (start, end, state) in sorted(contacts.items(), key=lambda kv: kv[0][1]):
         vid, pid = pair
-        if vid in reported and not params.report_every_contact:
-            continue  # one event per vehicle: its earliest qualifying pedestrian
         entered_at = [g for g in deep_frames.get(pid, []) if start - window <= g <= end + window]
         if params.require_crossing and not entered_at:
             continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle)
         frame = max(start, min(entered_at)) if entered_at else start
-        time_s = round(frame / params.fps, 3)
-        if params.report_every_contact and params.contact_dedup_s > 0 \
-                and any(abs(time_s - seen) <= params.contact_dedup_s for seen in reported.get(vid, ())):
-            continue  # the same vehicle's pass, already reported for another pedestrian of it
-        reported.setdefault(vid, []).append(time_s)
         span = round(params.evidence_s * params.fps)
         reasons = ["short_vehicle_track"] if lengths.get(vid, 0) < params.min_track_frames else []
-        events.append(Event("vehicle_on_crosswalk_with_pedestrian", frame, round(frame / params.fps, 3), vid,
-                            kinds[vid], pid, state, bool(entered_at), (start, end),
-                            (max(1, frame - span), frame + span), bool(reasons), reasons))
+        candidates.append(Event("vehicle_on_crosswalk_with_pedestrian", frame, round(frame / params.fps, 3), vid,
+                                kinds[vid], pid, state, bool(entered_at), (start, end),
+                                (max(1, frame - span), frame + span), bool(reasons), reasons))
+    if params.report_every_contact:
+        return dedupe_contacts(candidates, params)
+    events, reported = [], set()
+    for event in candidates:  # contact-start order, so this is the vehicle's earliest qualifying pedestrian
+        if event.vehicle_id in reported:
+            continue  # one event per vehicle
+        reported.add(event.vehicle_id)
+        events.append(event)
     return events
 
 
