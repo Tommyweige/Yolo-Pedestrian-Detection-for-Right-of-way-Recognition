@@ -7,7 +7,10 @@ import tempfile
 import math
 import queue
 import threading
+import time
 from pathlib import Path
+
+import yield_pipeline
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 YOLO_PROJECT_ROOT = PROJECT_ROOT / "YOLOv8_DeepSORT_Object_Tracking"
@@ -149,6 +152,25 @@ def _video_width(video_path):
     if width <= 0:
         raise ValueError(f"無法讀取影片寬度：{video_path}")
     return width
+
+
+def _video_metadata(video_path):
+    """Frame count, fps and size; the image rule's thresholds and event times depend on them."""
+    import cv2
+
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if not capture.isOpened():
+            raise ValueError(f"無法開啟影片：{video_path}")
+        frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        size = (int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    finally:
+        capture.release()
+
+    if frames <= 0 or fps <= 0:
+        raise ValueError(f"無法讀取影片的影格數或 fps：{video_path}")
+    return {"frames": frames, "fps": fps, "size": size}
 
 
 def _inference_imgsz(video_width):
@@ -330,4 +352,64 @@ def run_detection(videos, output, model, task, angle=0, cancelled=lambda: False,
                 raise RuntimeError(f"偵測失敗（{code}）：{video.name}\n" + "\n".join(tail))
             yield {"type": "progress", "index": index + 1, "current": 1, "total": 1,
                    "message": f"已完成：{video.name}"}
+    yield {"type": "done"}
+
+
+def run_yield(videos, output, cancelled=lambda: False, on_process=lambda process: None):
+    """Run the image-space yield pipeline (masks -> tracks -> rule) and stream protocol events.
+
+    Args:
+        videos: Input video paths, resolved relative to the project root.
+        output: Existing directory; each video's intermediates and events go to <output>/yield/<stem>/.
+        cancelled: Callback that requests cancellation when it returns true.
+        on_process: Callback receiving the running step, then None on release.
+
+    Yields:
+        Dictionaries with type 'progress' (index, current = finished steps, total = 3, message),
+        'event' (one rule event with index, video, video_name) or 'done'. Cancellation is
+        checked between frames of the reader and between steps.
+
+    Raises:
+        ValueError: Missing videos, output directory, or unreadable video metadata.
+        FileNotFoundError: A required video, crosswalk model or script is missing.
+        RuntimeError: A pipeline step exits with a nonzero status.
+    """
+    if not videos or not output:
+        raise ValueError("請先選擇影片與輸出資料夾。")
+    output_dir = _configured_path(output)
+    if not output_dir.is_dir():
+        raise ValueError(f"輸出資料夾不存在：{output_dir}")
+    for index, video in enumerate(videos):
+        if cancelled():
+            yield {"type": "cancelled"}
+            return
+        video = _configured_path(video)
+        if not video.is_file():
+            raise FileNotFoundError(f"找不到影片：{video}")
+        info = _video_metadata(video)
+        work = yield_pipeline.workspace(output_dir, video)
+        work.mkdir(parents=True, exist_ok=True)
+        steps = yield_pipeline.plan(video, work, os.environ)
+        yield {"type": "progress", "index": index, "current": 0, "total": len(steps),
+               "message": f"準備影片：{video.name}"}
+        timings = {}
+        for step in steps:
+            if cancelled():
+                yield {"type": "cancelled"}
+                return
+            yield {"type": "progress", "index": index, "current": step.number - 1,
+                   "total": len(steps), "message": f"{step.label}：{video.name}"}
+            started = time.time()
+            outcome = yield_pipeline.execute(step.command, step.label, cancelled, on_process)
+            if outcome == "cancelled":
+                yield {"type": "cancelled"}
+                return
+            timings[step.label] = round(time.time() - started, 1)
+        events = yield_pipeline.read_events(work / "events.jsonl")
+        meta = yield_pipeline.write_run_meta(work, video, events, timings, steps, info)
+        for event in events:
+            yield {"type": "event", "index": index, "video": str(video),
+                   "video_name": video.name, **event}
+        yield {"type": "progress", "index": index + 1, "current": len(steps), "total": len(steps),
+               "message": f"完成：{video.name}，{len(events)} 件事件，{meta['seconds']} 秒"}
     yield {"type": "done"}
