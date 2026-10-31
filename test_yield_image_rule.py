@@ -176,6 +176,32 @@ class ImageRule(unittest.TestCase):
                   track(10, "car", CAR_ON, range(1, 31))]
         self.assertEqual(len(run(tracks)), 1)
 
+    # The candidate-list construction (report_every_contact) is what the paper-side comparison scores, so these two pin
+    # the difference it is meant to make: a vehicle's later contact with a different pedestrian survives when it is a
+    # separate pass, and does not when both contacts belong to the same pass.
+    CANDIDATE = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True)
+
+    def test_candidate_list_reports_a_later_contact_of_the_same_vehicle(self):
+        first, second = (1230, 700, 1290, 850), (1350, 700, 1410, 850)
+        tracks = [track(1, "person", first, range(1, 61)), track(2, "person", second, range(120, 181)),
+                  track(10, "car", CAR_ON, range(1, 181))]
+        frames = range(1, 181)
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames)],
+                         [(10, 1)])                                      # one event per vehicle keeps the first
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames, params=self.CANDIDATE)],
+                         [(10, 1), (10, 2)])                             # 2 s apart: two passes, two reports
+
+    def test_candidate_list_collapses_contacts_of_one_pass(self):
+        first, second = (1230, 700, 1290, 850), (1350, 700, 1410, 850)
+        tracks = [track(1, "person", first, range(1, 61)), track(2, "person", second, range(70, 121)),
+                  track(10, "car", CAR_ON, range(1, 121))]
+        frames = range(1, 121)
+        self.assertEqual([e.pedestrian_id for e in run(tracks, frames=frames, params=self.CANDIDATE)],
+                         [1])                                            # 1.15 s apart: one pass, one report
+        raw = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup_s=0)
+        self.assertEqual([e.pedestrian_id for e in run(tracks, frames=frames, params=raw)],
+                         [1, 2])                                         # the undeduped candidate list
+
     def test_short_vehicle_track_is_marked_for_review(self):
         events = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 13))])  # 12 < 15 frames
         self.assertEqual(events[0].review_reasons, ["short_vehicle_track"])

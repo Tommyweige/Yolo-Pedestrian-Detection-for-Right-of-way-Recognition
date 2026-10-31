@@ -10,6 +10,9 @@ it ends, so stepping on as the vehicle passes is caught while standing still at 
 vehicle's first frame on it. The reported time is then the frame the pedestrian is on the crosswalk, which is what a human
 labeller marks; contact_frames keeps the whole span. This uses frames after the contact: offline only.
 --include-waiting disables that filter; each event records the pedestrian state at contact and whether they entered.
+How contacts become events is a parameter: by default one event per vehicle (its earliest qualifying pedestrian), or with
+`report_every_contact` every (vehicle, pedestrian) contact deduped by vehicle pass. Both are scored by the same
+scripts/eval_rule_events.py, so the two constructions can be compared on one table.
 Output is a candidate for review, not a legal finding.
 """
 import argparse
@@ -61,6 +64,12 @@ class Params:
                                              # at the 0.1 numbers) but 12/15 at 0.03-0.04, so the passing window is a narrow
                                              # shelf between two cliffs. 0.04 is the middle of that shelf, 0.03 is its edge.
                                              # It must be re-validated on clips that were not tuned on.
+    report_every_contact: bool = False      # False: one event per vehicle (its earliest qualifying pedestrian). True: report
+                                            # every (vehicle, pedestrian) contact and let `contact_dedup_s` collapse one
+                                            # vehicle's pass - the "candidate list" construction, for comparison only.
+    contact_dedup_s: float = 1.25           # candidate list only: contacts of one vehicle this close in time are one report
+                                            # (the evaluation's tolerance, so both constructions are scored alike). 0 keeps
+                                            # every contact, which is how the raw candidate count is measured.
     require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
     entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk during the contact (or this long after it) does
     evidence_s: float = 3.0
@@ -384,16 +393,20 @@ def detect(mask_at, tracks, params, frames):
                 contacts[(pair, started[pair][0])] = [started[pair][0], f, state]
             elif streak[pair] > need:
                 contacts[(pair, started[pair][0])][1] = f
-    events, reported = [], set()
+    events, reported = [], {}
     for (pair, _), (start, end, state) in sorted(contacts.items(), key=lambda kv: kv[0][1]):
         vid, pid = pair
-        if vid in reported:
+        if vid in reported and not params.report_every_contact:
             continue  # one event per vehicle: its earliest qualifying pedestrian
         entered_at = [g for g in deep_frames.get(pid, []) if start - window <= g <= end + window]
         if params.require_crossing and not entered_at:
             continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle)
-        reported.add(vid)
         frame = max(start, min(entered_at)) if entered_at else start
+        time_s = round(frame / params.fps, 3)
+        if params.report_every_contact and params.contact_dedup_s > 0 \
+                and any(abs(time_s - seen) <= params.contact_dedup_s for seen in reported.get(vid, ())):
+            continue  # the same vehicle's pass, already reported for another pedestrian of it
+        reported.setdefault(vid, []).append(time_s)
         span = round(params.evidence_s * params.fps)
         reasons = ["short_vehicle_track"] if lengths.get(vid, 0) < params.min_track_frames else []
         events.append(Event("vehicle_on_crosswalk_with_pedestrian", frame, round(frame / params.fps, 3), vid,

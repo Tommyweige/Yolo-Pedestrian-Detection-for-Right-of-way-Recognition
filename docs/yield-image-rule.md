@@ -18,7 +18,8 @@ Mapillary Vistas is CC BY-NC-SA: research/demo use only.
 
 Event = a vehicle whose bottom edge is on the same crosswalk blob as a pedestrian (foot on it, or within 0.8 person heights of its
 edge), horizontal gap <= 3 vehicle widths (the law is ~3 m / one lane; 1.5 vehicle widths missed motorcycles, whose boxes are
-under a metre wide), for >= 0.2 s; one event per vehicle track.
+under a metre wide), for >= 0.2 s; one event per vehicle track (the candidate-list construction below reports every contact
+instead and merges one vehicle's pass).
 Motorcycle riders are not pedestrians (`rider_frames`): a frame counts as riding when the person box sits 50% inside a
 motorcycle box inflated by 15% of the person's height, dropouts up to 0.25 s between riding frames are filled in, and the
 track needs 5 such frames. It is decided per person and per moment, not per frame (a rider's box jitters out of the bike box
@@ -42,6 +43,33 @@ manual label hits go 5/9 -> 6/9, confirmed stays 7/8, duplicate reports stay 0 a
 more events. 0.04 is the middle of that shelf and 0.03 is its edge, so 0.04 is what the rule uses. It must be re-validated on
 clips that did not take part in that sweep before the number can be called anything but in-sample. Tested at 0.02, 0.03, 0.04,
 0.05, 0.06, 0.08 and 0.1; the gain window is 0.03-0.04 only.
+
+## Two event constructions, one table (2026-10-31, in-sample)
+How contacts become events is a construction choice, not a threshold, so both constructions are measured by the same script
+(`scripts/eval_constructions.py`, 7 clips, tolerance 1.25 s, same scorer as `eval_rule_events.py`) and only these four rows
+are quoted anywhere:
+
+| construction | depth | events | after the pass collapse | manual | confirmed | incident recall | duplicate reports | precision |
+|---|---|---|---|---|---|---|---|---|
+| one event per vehicle (default) | 0.10 | 28 | 28 | 5/9 | 7/8 | 11/15 | 0 | 0.429 |
+| candidate list | 0.10 | 53 | 32 | 5/9 | 7/8 | 11/15 | 0 | 0.375 |
+| one event per vehicle (default) | 0.04 | 31 | 31 | 6/9 | 7/8 | 12/15 | 0 | 0.419 |
+| candidate list | 0.04 | 72 | 37 | 6/9 | 7/8 | 12/15 | 0 | 0.351 |
+
+- The candidate list (`report_every_contact`) reports every (vehicle, pedestrian) contact and then merges one vehicle's
+  contacts within `contact_dedup_s` (1.25 s, the evaluation's own tolerance) into one report. "events" is what it emits
+  before that merge; every other column is scored after it. Because the merge uses the scoring tolerance, duplicate reports
+  are 0 by construction and cannot be compared between the two constructions.
+- At label level it buys nothing here: the same manual hits, the same confirmed hits and the same incident recall at both
+  depths, for 4-6 more reports and precision down 0.05-0.07. What the extra reports contain, at 0.04: 6 events over the
+  default construction, of which one is the clip 5 pair at 27.4 s (v188/p294, a real failure judged A) that the
+  one-event-per-vehicle collapse swallows because that vehicle had already reported another pedestrian at 23.2 s; one is the
+  same clip 7 contact reported again 1.4 s later (just outside the merge window); four match no judged event.
+- Clip 5 is where the depth matters most, and no construction fixes it. Dropping the depth from 0.1 to 0.04 moves the
+  reported frame of the same contacts 2.7 s and 4.2 s earlier ("first frame on the crosswalk" arrives sooner as the shallow
+  edge starts to count), which puts both events 1.6-1.9 s away from the human labels at 8.9 s and 21.7 s, outside the 1.25 s
+  tolerance. Both are still reported, at times the labeller did not mark: the depth threshold and the event's timestamp are
+  coupled, which is why recall does not improve monotonically as the depth goes down.
 
 ## Real-video result (helmet-cam night clip, 900 frames, 60 fps) — NOT a measured accuracy
 - Near-crosswalk segmentation found the crosswalk in all 18 visually checked frames (even with vehicles/pedestrians occluding).
