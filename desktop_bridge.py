@@ -4,11 +4,19 @@ import os
 import sys
 import threading
 
-from detection_backend import run_detection
+from detection_backend import run_detection, run_yield
 
 
 def emit(event):
     print(json.dumps(event, ensure_ascii=True), flush=True)
+
+
+def stream(request, cancelled):
+    """Protocol events for one request: the 不禮讓 task runs the image rule, the rest the legacy predictors."""
+    if request.get("task") == "yield":
+        return run_yield(request["videos"], request["output"], cancelled=cancelled)
+    return run_detection(request["videos"], request["output"], request["model"],
+                         request["task"], request.get("angle", 0), cancelled)
 
 
 def detect():
@@ -24,8 +32,7 @@ def detect():
         cancelled.set()
 
     threading.Thread(target=listen, daemon=True).start()
-    for event in run_detection(request["videos"], request["output"], request["model"],
-                               request["task"], request.get("angle", 0), cancelled.is_set):
+    for event in stream(request, cancelled.is_set):
         emit(event)
 
 
