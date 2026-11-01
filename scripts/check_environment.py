@@ -60,7 +60,6 @@ def main():
             import ultralytics
             from ultralytics.yolo.engine.predictor import BasePredictor
             import moviepy.editor
-            from PyQt5 import QtCore
             assert ultralytics.__version__ == "8.0.3"
             result["ultralytics"] = ultralytics.__version__
         elif args.profile == "modern":
