@@ -473,7 +473,12 @@ impl Event {
 const GROUP_WINDOW_S: f64 = 5.0;
 
 /// What the player card needs besides the video itself: its padding, the file name row and the transport row.
-const PLAYER_CHROME: f32 = 116.0;
+/// Measured on the running window: 226 points of card around a 104-point video at 1600x1100, so 122 with 8 to spare.
+const PLAYER_CHROME: f32 = 130.0;
+/// How tall the video may get squeezed while a row is open: a strip that still shows the frame and leaves the transport
+/// row on screen. The window is measured in points, so a 1600x1100 pixel window at 128% scaling has only 859, and six
+/// rows plus the player card only fit with the video at this size.
+const PLAYER_FLOOR: f32 = 60.0;
 const CLOCK_WIDTH: f32 = 140.0;
 
 /// One row of the event list: one vehicle at one crossing, with every pedestrian it was reported against.
@@ -823,8 +828,17 @@ impl Desktop {
                         palette,
                     );
                 });
+                // An open row takes room of its own: expanding must show the per-pedestrian times, not push them past
+                // the scroll edge. The player under the card keeps a usable strip plus its toolbar, so an open row only
+                // takes what is left over; at a short window that is one row of sub-entries more than the folded list.
+                let room = ui.clip_rect().bottom() - ui.cursor().top();
+                let list_height = if self.expanded.is_empty() {
+                    160.0
+                } else {
+                    (room - PLAYER_CHROME - PLAYER_FLOOR - 40.0).clamp(160.0, 320.0)
+                };
                 egui::ScrollArea::vertical()
-                    .max_height(160.0)
+                    .max_height(list_height)
                     .id_salt("yield_events")
                     .show(ui, |ui| {
                         // Rows sit close: a run of the candidate list brings a dozen events, and the card shares the
@@ -1228,7 +1242,7 @@ impl Desktop {
     /// event list above it and the controls under it both stay visible. The room is measured where the card is drawn.
     fn player_height_cap(&self, ui: &egui::Ui) -> f32 {
         let room = ui.clip_rect().bottom() - ui.cursor().top();
-        (room - PLAYER_CHROME).clamp(150.0, 340.0)
+        (room - PLAYER_CHROME).clamp(PLAYER_FLOOR, 340.0)
     }
 
     /// Open or close the per-pedestrian times of one row. A row is keyed by video and vehicle, so the same vehicle in
@@ -1632,6 +1646,38 @@ impl eframe::App for Desktop {
     }
 }
 
+/// Harness: fill the list from a JSONL of protocol events, so a window shows a finished run without waiting for the
+/// pipeline. Capture-mode layout runs use it, and so does a plain window that is captured with PrintWindow while the
+/// machine has to stay hands-off: both draw the same screen a completed run leaves behind.
+fn seed_check_events(desktop: &mut Desktop) {
+    let Some(path) = std::env::var_os("TRAFFIC_CHECK_EVENTS") else {
+        return;
+    };
+    let text = std::fs::read_to_string(path).expect("Read check events");
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let value: Value = serde_json::from_str(line).expect("Check event JSON");
+        desktop
+            .events
+            .push(Event::from_protocol(&value).expect("Check event fields"));
+    }
+    desktop.status = format!("影片處理完成：{} 件事件。", desktop.events.len());
+    // The seeded list comes from a 不禮讓 run, so the mode under it says the same thing.
+    desktop.task = 1;
+    desktop.single_progress = 1.0;
+    desktop.batch_progress = 1.0;
+    desktop.detection_check_started = true;
+    // Open the rows of the vehicles named in TRAFFIC_CHECK_EXPANDED ("car #110;bus #167"), so the per-pedestrian
+    // times can be captured without clicking.
+    if let Ok(names) = std::env::var("TRAFFIC_CHECK_EXPANDED") {
+        let names: Vec<String> = names.split(';').map(|name| name.trim().to_owned()).collect();
+        for group in group_events(&desktop.events) {
+            if names.contains(&group.vehicle()) {
+                desktop.expanded.insert(group.key());
+            }
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let capturing = std::env::var_os("TRAFFIC_SCREENSHOT").is_some();
     let compact =
@@ -1732,29 +1778,6 @@ fn main() -> eframe::Result {
                 if desktop.check_detection {
                     desktop.task = 1;
                     desktop.output = std::env::var_os("TRAFFIC_CHECK_OUTPUT").map(PathBuf::from);
-                    // Layout runs: fill the list from a JSONL of protocol events instead of waiting for a pipeline run.
-                    if let Some(path) = std::env::var_os("TRAFFIC_CHECK_EVENTS") {
-                        let text = std::fs::read_to_string(path).expect("Read check events");
-                        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-                            let value: Value = serde_json::from_str(line).expect("Check event JSON");
-                            desktop.events.push(Event::from_protocol(&value).expect("Check event fields"));
-                        }
-                        desktop.status = format!("影片處理完成：{} 件事件。", desktop.events.len());
-                        desktop.single_progress = 1.0;
-                        desktop.batch_progress = 1.0;
-                        desktop.detection_check_started = true;
-                    }
-                    // Layout runs: open the rows of the vehicles named in TRAFFIC_CHECK_EXPANDED ("car #110;bus #167"),
-                    // so the per-pedestrian times can be captured without clicking.
-                    if let Ok(names) = std::env::var("TRAFFIC_CHECK_EXPANDED") {
-                        let names: Vec<String> =
-                            names.split(';').map(|name| name.trim().to_owned()).collect();
-                        for group in group_events(&desktop.events) {
-                            if names.contains(&group.vehicle()) {
-                                desktop.expanded.insert(group.key());
-                            }
-                        }
-                    }
                 }
                 desktop.check_playback =
                     std::env::var("TRAFFIC_SCREENSHOT_VIEW").as_deref() == Ok("playback");
@@ -1773,6 +1796,7 @@ fn main() -> eframe::Result {
                 }
                 apply_theme(&cc.egui_ctx, desktop.dark);
             }
+            seed_check_events(&mut desktop);
             if let Some(path) = std::env::var_os("TRAFFIC_PREVIEW_VIDEO") {
                 let path = PathBuf::from(path);
                 desktop.videos = vec![path.clone()];
