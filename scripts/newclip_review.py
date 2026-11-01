@@ -32,6 +32,12 @@ TEMPLATE = Path(__file__).resolve().parent / "newclip_review_template.html"
 SCHEMA = "yolo-ped/newclip-review@1"
 FONT_PATH = "C:/Windows/Fonts/msjh.ttc"
 ROLE_NAMES = {"dev": "開發集", "validation": "驗證集"}
+VERDICT_LEGEND = [
+    ("A", "合理：這確實是車輛未讓行人，該報", "precision 的分子"),
+    ("B", "重報：情境沒問題，但同一件事已經報過／被拆成好幾件", "不算命中、不算誤報，算重報"),
+    ("C", "不合理：不該報（誤判、行人其實在等、車沒進入路徑等）", "precision 的分母，算誤報"),
+    ("D", "不確定：畫面或資訊不足", "預設不進 precision 分母，另外列出"),
+]
 _fonts = {}
 
 
@@ -479,9 +485,14 @@ def build_event(number, event, clip, media_dir):
 
 # ---------------------------------------------------------------- output
 
-def storage_key_of(run_dir):
-    """A localStorage key that survives a rebuild (hash() is randomised per process) but differs per run."""
-    return "yolo-ped-newclip-" + hashlib.sha1(str(Path(run_dir).resolve()).encode("utf-8")).hexdigest()[:8]
+def storage_key_of(run_dir, salt=""):
+    """A localStorage key that survives a rebuild (hash() is randomised per process) but differs per run.
+
+    `salt` keeps a selection page built from the same run (only the unjudged events) from sharing its drafted
+    verdicts with the run's full page.
+    """
+    text = str(Path(run_dir).resolve()) + "|" + salt
+    return "yolo-ped-newclip-" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
 
 
 def write_html(payload, out_dir, title, subtext, footer):
@@ -497,8 +508,40 @@ def write_html(payload, out_dir, title, subtext, footer):
     return len(html)
 
 
+def legend_lines():
+    lines = ["## 判斷代號", "", "| 代號 | 意思 | 計分時的作用 |", "|---|---|---|"]
+    lines += [f"| **{code}** | {what} | {effect} |" for code, what, effect in VERDICT_LEGEND]
+    return lines
+
+
+def operation_lines(storage_key):
+    return [
+        "## 操作",
+        "",
+        "| 按鍵 | 作用 |",
+        "|---|---|",
+        "| `A` `B` `C` `D` | 標記目前這件，並自動跳到下一件未標 |",
+        "| `J` / `K`、`↓` / `↑` | 上下一件 |",
+        "| 點上方篩選 chips | 只看未判／已判（待判清單另外能只看全新／重判） |",
+        "",
+        f"判定即時存在瀏覽器（localStorage，key `{storage_key}`），關掉再開還在。"
+        f"同一批換了 run 資料夾就會是新的 key，不會蓋掉舊的。",
+        "",
+    ]
+
+
+def selection_note(counts):
+    """The one paragraph that says what this partial page is, in numbers."""
+    return (f"這 {counts['pending']} 件是 {counts['events']} 件裡還沒判的："
+            f"{counts['new']} 件全新、{counts['rejudge']} 件是舊判定對不上、需要重判。"
+            f"判完匯出 JSON，把檔案加進算分的 <code>--verdicts</code>，"
+            f"precision 就涵蓋 {counts['events']} 件裡的 {counts['covered']} 件。")
+
+
 def write_readme(manifest, payload, out_dir, run_dir):
     """How to judge this batch, and what to do with the export."""
+    if payload.get("selection"):
+        return write_selection_readme(manifest, payload, out_dir, run_dir)
     events = payload["events"]
     lines = [
         f"# 未讓事件判斷頁 · {len(manifest['clips'])} 支影片、{len(events)} 件",
@@ -524,28 +567,7 @@ def write_readme(manifest, payload, out_dir, run_dir):
     ]
     for clip in manifest["clips"]:
         lines.append(f"| {clip['stem']} | {clip['events']} | `{clip['video_name']}` |")
-    lines += [
-        "",
-        "## 判斷代號",
-        "",
-        "| 代號 | 意思 | 計分時的作用 |",
-        "|---|---|---|",
-        "| **A** | 合理：這確實是車輛未讓行人，該報 | precision 的分子 |",
-        "| **B** | 重報：情境沒問題，但同一件事已經報過／被拆成好幾件 | 不算命中、不算誤報，算重報 |",
-        "| **C** | 不合理：不該報（誤判、行人其實在等、車沒進入路徑等） | precision 的分母，算誤報 |",
-        "| **D** | 不確定：畫面或資訊不足 | 預設不進 precision 分母，另外列出 |",
-        "",
-        "## 操作",
-        "",
-        "| 按鍵 | 作用 |",
-        "|---|---|",
-        "| `A` `B` `C` `D` | 標記目前這件，並自動跳到下一件未標 |",
-        "| `J` / `K`、`↓` / `↑` | 上下一件 |",
-        "| 點上方篩選 chips | 只看未判／已判 |",
-        "",
-        f"判定即時存在瀏覽器（localStorage，key `{payload['storage_key']}`），關掉再開還在。"
-        f"同一批換了 run 資料夾就會是新的 key，不會蓋掉舊的。",
-        "",
+    lines += [""] + legend_lines() + [""] + operation_lines(payload["storage_key"]) + [
         "## 匯出與算分",
         "",
         f"頁面右上角的 **匯出 JSON** 會下載 `{payload['export_prefix']}-verdicts-<時間>.json`。"
@@ -576,16 +598,132 @@ def write_readme(manifest, payload, out_dir, run_dir):
     (out_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def build_review(run_dir, out_dir=None, title=None):
-    """Every event of the run as one page. Returns the payload; writes into <run>/review by default."""
+def write_selection_readme(manifest, payload, out_dir, run_dir):
+    """The pending list: which events are left, which batch each one is, and what judging them buys."""
+    selection = payload["selection"]
+    counts = selection["counts"]
+    lines = [
+        f"# 待判清單 · {len(manifest['clips'])} 支影片、{counts['pending']} 件"
+        f"（全部 {counts['events']} 件、已判 {counts['judged']} 件）",
+        "",
+        "## 打開這個檔案",
+        "",
+        "```text",
+        str(out_dir / "index.html"),
+        "```",
+        "",
+        "雙擊即可，不需要伺服器、不需要網路。圖片在同一個資料夾的 `media\\` 裡。",
+        "",
+        "## 這是哪一批",
+        "",
+        f"- run 資料夾：`{run_dir}`（角色：**{ROLE_NAMES.get(manifest['role'], manifest['role'])}**）",
+        f"- 產生於 {manifest['created_at']}，規則 `yield_image_rule.py` 的預設參數"
+        f"（候選清單建構、`contact_dedup=pair`、腳深 {manifest['params']['min_inside_person_heights']:.2f} 個人高）",
+        f"- 影片：`{manifest['videos']}`（只讀）",
+        f"- 事件總數 {counts['events']}，已經有判定的 {counts['judged']} 件不在這頁；"
+        f"這頁只有還沒判的 {counts['pending']} 件",
+        f"- 舊判定檔 {counts['stray_rows']} 列對不上任何事件：{counts['stray_rows'] - counts['orphan_rows']} 列"
+        f"寫在卡片上，{counts['orphan_duplicates']} 列是同一件事的其他車輛，"
+        f"{counts['orphan_gaps']} 列是規則現在沒報到的位置（見下面「沒有卡片的舊判定」）",
+        "",
+        "| 影片 | 待判 | 全新 | 重判 |",
+        "|---|---|---|---|",
+    ]
+    per_clip = {}
+    for item in payload["events"]:
+        entry = per_clip.setdefault(item["video"], {"pending": 0, "new": 0, "rejudge": 0})
+        entry["pending"] += 1
+        entry[item["origin"]] += 1
+    for clip in manifest["clips"]:
+        entry = per_clip.get(clip["stem"], {"pending": 0, "new": 0, "rejudge": 0})
+        lines.append(f"| {clip['stem']} | {entry['pending']} | {entry['new']} | {entry['rejudge']} |")
+    lines += [
+        f"| **小計** | **{counts['pending']}** | **{counts['new']}** | **{counts['rejudge']}** |",
+        "",
+        "## 卡片上的兩批",
+        "",
+        "- **全新事件**（黃框）：這一件以前沒有任何判定，判它就是在補一個新的判定。",
+        "- **舊判定對不上、需要重判**（橙框）：有一列舊判定是針對這支影片做的，但時間差超過 1.25 s 的容差、接不到任何事件；"
+        "它指的車輛 id 跟這一件相同（或落在這一件附近），所以這一列印在卡片上，連同舊的時間與判定，"
+        "由判的人決定它還成不成立。",
+        "- 卡片上另有「同一支影片附近的判定」：同一支影片在附近已經有一件判過了（含時間差、車輛、行人）。"
+        "如果這一件其實是同一件事被拆成兩件，選 **B**。",
+        "",
+    ] + legend_lines() + [""] + operation_lines(payload["storage_key"]) + [
+        "## 判完能算到什麼",
+        "",
+        f"這 {counts['pending']} 件判完，precision 覆蓋 {counts['covered']}/{counts['events']} 件。",
+    ]
+    if counts["orphan_rows"]:
+        lines += [
+            "",
+            "## 沒有卡片的舊判定",
+            "",
+            "這些列沒有卡片可以判，所以只列出來：",
+            "",
+            "| 影片 | 舊判定時間 | 車輛 | 判定 | 最近的事件 | 差 | 那件是 | 性質 |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for orphan in selection["orphans"]:
+            row = orphan["row"]
+            kind = "同一件事的其他車輛" if orphan["kind"] == "duplicate" else "規則現在沒報到這一件"
+            lines.append(f"| {row['stem']} | {row['time_s']:.3f}s | {row['vehicle']} | {row['verdict']} | "
+                         f"{orphan['nearest_time_s']}s | {orphan['nearest_delta_s']} s | {orphan['nearest_judged']} | "
+                         f"{kind} |")
+        if counts["orphan_gaps"]:
+            lines += ["", f"其中 {counts['orphan_gaps']} 列是 recall 的缺口（規則沒報到那件事），"
+                          "不是這份清單能補的；同一件事的其他車輛只是舊檔多列的行，不影響 precision。"]
+        else:
+            lines += ["", "它們都是同一件事的其他車輛（舊檔案一個時刻列了好幾台車），不影響 precision 覆蓋。"]
+    lines += [
+        "",
+        "## 匯出與算分",
+        "",
+        f"頁面右上角的 **匯出 JSON** 會下載 `{payload['export_prefix']}-verdicts-<時間>.json`。"
+        "每一列都帶著影片檔名、時間、車輛 id、行人 id、接觸區間、屬於哪一批與備註。",
+        "",
+        "算分時把這份新判定跟**既有的判定檔一起**丟進去（舊檔還是要給，它涵蓋早先判過的 "
+        f"{counts['judged']} 件）：",
+        "",
+        "```powershell",
+        "python scripts/newclip_score.py --run <這批> --dev-run <開發集 run> \\",
+        f"    --dev-verdicts <既有判定.json> --verdicts <這份匯出的.json>",
+        "```",
+        "",
+        "## 檔案",
+        "",
+        "```text",
+        f"{out_dir.name}\\",
+        "  index.html          ← 打開這個",
+        "  README.md",
+        "  events.json         卡片資料（規則理由、數字、時間軸、屬於哪一批）",
+        "  media\\E01…         連續幀動畫、逐幀膠捲、全景一幀",
+        "```",
+    ]
+    (out_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_review(run_dir, out_dir=None, title=None, selection=None):
+    """The run's events as one page. Returns the payload; writes into <run>/review by default.
+
+    `selection` (from scripts/newclip_pending.py) narrows the page to the events it lists, and tags each card with
+    which batch it belongs to; without it every event of the run is a card.
+    """
     run_dir = Path(run_dir)
     manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    out_dir = Path(out_dir) if out_dir else run_dir / "review"
+    out_dir = Path(out_dir) if out_dir else run_dir / ("pending" if selection else "review")
+    wanted = None
+    if selection:
+        wanted = {(item["stem"], item["index"]): item for item in selection["events"]}
     media_dir = out_dir / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
+    for stale in media_dir.iterdir():           # a rebuild must not leave cards of events this page no longer has
+        if stale.is_file():
+            stale.unlink()
     role = ROLE_NAMES.get(manifest["role"], manifest["role"])
     total = sum(clip["events"] for clip in manifest["clips"])
     generated = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    salt = out_dir.name if selection else ""
     payload = {
         "schema": SCHEMA,
         "generated_at": generated,
@@ -600,24 +738,53 @@ def build_review(run_dir, out_dir=None, title=None):
                       for clip in manifest["clips"]],
         },
         "params": manifest["params"],
-        "storage_key": storage_key_of(run_dir),
-        "export_prefix": f"newclip-{run_dir.name}",
+        "storage_key": storage_key_of(run_dir, salt),
+        "export_prefix": f"newclip-{run_dir.name}" if not selection else f"newclip-{out_dir.name}",
         "events": [],
     }
+    if selection:
+        counts = selection["counts"]
+        payload["selection"] = {"counts": counts, "note": selection_note(counts),
+                                "orphans": selection["orphans"]}
 
     clips = {clip["stem"]: Clip(clip, manifest["params"]) for clip in manifest["clips"]}
+    built = set()
     for clip_meta in manifest["clips"]:
         clip = clips[clip_meta["stem"]]
-        for event in read_events(clip_meta["events_jsonl"]):
+        for index, event in enumerate(read_events(clip_meta["events_jsonl"])):
+            meta = None
+            if wanted is not None:
+                meta = wanted.get((clip_meta["stem"], index))
+                if meta is None:
+                    continue
+                if abs(meta["time_s"] - event["time_s"]) > 1e-6:
+                    raise RuntimeError(f"{clip_meta['stem']} 第 {index} 件對不上：清單寫 {meta['time_s']}，"
+                                       f"run 寫 {event['time_s']}——events.jsonl 換過了，重跑 newclip_pending")
             number = len(payload["events"]) + 1
-            payload["events"].append(build_event(number, event, clip, media_dir))
+            card = build_event(number, event, clip, media_dir)
+            if meta is not None:
+                card["origin"] = meta["origin"]
+                card["priors"] = meta["priors"]
+                card["neighbour"] = meta["neighbour"]
+                built.add((clip_meta["stem"], index))
+            payload["events"].append(card)
             log(f"  E{number:02d} {clip_meta['stem'][:20]} {event['time_s']:>7.3f}s "
                 f"veh {event['vehicle_id']:>5} ped {event['pedestrian_id']:>5}")
+    if wanted is not None and built != set(wanted):
+        missing = sorted(set(wanted) - built)
+        raise RuntimeError(f"清單有 {len(missing)} 件在 run 裡找不到：{missing[:5]}")
 
     (out_dir / "events.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-    page_title = title or f"行人未讓事件 · {role} {len(manifest['clips'])} 支影片、{len(payload['events'])} 件"
-    subtext = (f"<code>{manifest['branch']}</code> @ <code>{manifest['commit']}</code> · "
-               f"規則預設參數（候選清單建構）· 這 {total} 件全部要判")
+    if selection:
+        counts = selection["counts"]
+        page_title = title or (f"行人未讓事件 · {role} 待判清單（{counts['pending']} / {counts['events']} 件）")
+        subtext = (f"<code>{manifest['branch']}</code> @ <code>{manifest['commit']}</code> · "
+                   f"規則預設參數（候選清單建構）· 這 {counts['pending']} 件是 {total} 件裡還沒判的"
+                   f"（全新 {counts['new']}、重判 {counts['rejudge']}）")
+    else:
+        page_title = title or f"行人未讓事件 · {role} {len(manifest['clips'])} 支影片、{len(payload['events'])} 件"
+        subtext = (f"<code>{manifest['branch']}</code> @ <code>{manifest['commit']}</code> · "
+                   f"規則預設參數（候選清單建構）· 這 {total} 件全部要判")
     footer = (f"產出 <code>{generated}</code> · 影片 <code>{manifest['videos']}</code>（只讀）· "
               f"事件 <code>{run_dir}</code> · 這是輔助分析，不是法律違規認定。")
     size = write_html(payload, out_dir, page_title, subtext, footer)

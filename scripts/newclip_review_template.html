@@ -62,8 +62,12 @@
   .badge.new { color: #ffd479; border-color: #6a5320; background: #2a2313; }
   .badge.vA { color: #8ce0b0; border-color: #2b5f43; } .badge.vB { color: #e8c076; border-color: #6a5320; }
   .badge.vC { color: #f0a08a; border-color: #6d3220; } .badge.vD { color: #b9c2cf; border-color: #3a424e; }
-  .prior { margin: 0 16px; padding: 7px 10px; border-radius: 7px; background: #2a2313; border: 1px solid #6a5320;
-    color: #e8c076; font-size: 12.5px; }
+  .badge.origin-new { color: #ffd479; border-color: #6a5320; background: #2a2313; }
+  .badge.origin-rejudge { color: #f0a08a; border-color: #6d3220; background: #2a1b1b; }
+  .prior { margin: 8px 16px 0; padding: 7px 10px; border-radius: 7px; background: #2a2313; border: 1px solid #6a5320;
+    color: #e8c076; font-size: 12.5px; line-height: 1.55; }
+  .prior b { color: #fff; }
+  .prior.near { background: #1e2630; border-color: #3a4552; color: #b9c6d6; }
 
   .media { padding: 14px 16px 4px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
   figure { margin: 0; }
@@ -158,7 +162,7 @@
 </header>
 
 <main>
-<p class="note-top">畫面裡 <b style="color:#3cd23c">綠框</b>是系統追蹤的車輛、<b style="color:#f03c3c">紅框</b>是行人、
+<p class="note-top" id="note-top">畫面裡 <b style="color:#3cd23c">綠框</b>是系統追蹤的車輛、<b style="color:#f03c3c">紅框</b>是行人、
   <b style="color:#ffdc3c">黃線＋藍綠半透明</b>是規則用的那塊斑馬線遮罩。每一件都附「連續幀動畫」與「逐幀膠捲」，
   兩者都是標記時間前後各 1.5 秒。判斷完直接按右上的 <b>匯出 JSON</b>，結果會存成一個檔；判定會自動存在這個瀏覽器裡，
   關掉再開還在。</p>
@@ -220,8 +224,19 @@ function timelineHtml(ev) {
 function cardHtml(ev) {
   const rec = store[ev.id] || {};
   const badge = rec.v
-    ? `<span class="badge v${rec.v}">已標 ${rec.v} · ${LABEL[rec.v]}</span>`
-    : `<span class="badge new">未看過</span>`;
+    ? `<span class="badge vbadge v${rec.v}">已標 ${rec.v} · ${LABEL[rec.v]}</span>`
+    : `<span class="badge vbadge new">未看過</span>`;
+  const origin = ev.origin
+    ? `<span class="badge origin-${ev.origin}">${ev.origin === "rejudge" ? "舊判定對不上、需重判" : "全新事件"}</span>`
+    : "";
+  const priors = (ev.priors || []).map((p) => `<div class="prior">舊判定在 <b>${p.time_s.toFixed(3)}s</b>、`
+    + `車 <b>${p.vehicle}</b> → <b>${p.verdict} · ${LABEL[p.verdict] || p.verdict}</b>，`
+    + `跟這一件（${ev.time_s.toFixed(3)}s）差 ${p.delta_s.toFixed(2)}s，超過 1.25s 的容差所以接不上——`
+    + `判這一件時把那個舊判定一起看。${p.note ? `　舊備註：${esc(p.note)}` : ""}</div>`).join("");
+  const n = ev.neighbour;
+  const near = n ? `<div class="prior near">同一支影片附近的判定：<b>${n.time_s.toFixed(3)}s</b>`
+    + `（車 ${n.vehicle_id}／行人 ${n.pedestrian_id}）已判 <b>${n.verdict} · ${LABEL[n.verdict]}</b>，`
+    + `相差 ${n.delta_s.toFixed(2)}s。如果這一件其實是同一件事被拆成兩件，選 B。</div>` : "";
   const review = (ev.review_reasons || []).length
     ? `<div class="prior" style="background:#2a1b1b;border-color:#6d3220;color:#f0a08a">規則自己標了待複核：${esc(ev.review_reasons.join("、"))}</div>` : "";
   return `
@@ -230,9 +245,9 @@ function cardHtml(ev) {
       <span class="num">${ev.id}</span>
       <h2>${esc(ev.video)}</h2>
       <span class="meta">${ev.time_s.toFixed(3)}s · 幀 ${ev.frame} · 車 ${ev.vehicle_id} (${esc(ev.vehicle_kind)}) · 行人 ${ev.pedestrian_id}</span>
-      ${badge}
+      ${badge}${origin}
     </div>
-    ${review}
+    ${priors}${near}${review}
     <div class="media">
       <figure>
         <img src="${ev.media.clip}" alt="${ev.id} 連續幀">
@@ -270,7 +285,8 @@ function cardHtml(ev) {
 function render() {
   const list = DATA.events.filter((e) => {
     const v = store[e.id] && store[e.id].v;
-    return filter === "all" || (filter === "open" && !v) || (filter === "decided" && v);
+    return filter === "all" || (filter === "open" && !v) || (filter === "decided" && v)
+      || (filter === "new" && e.origin === "new") || (filter === "rejudge" && e.origin === "rejudge");
   });
   document.getElementById("cards").innerHTML = list.map(cardHtml).join("");
   paintProgress();
@@ -295,8 +311,8 @@ function setVerdict(id, v) {
   const card = document.getElementById("card-" + id);
   if (card) {
     card.className = card.className.replace(/done-[ABCD]/, "").trim() + " done-" + v;
-    const badge = card.querySelector(".badge");
-    if (badge) { badge.className = "badge v" + v; badge.textContent = `已標 ${v} · ${LABEL[v]}`; }
+    const badge = card.querySelector(".vbadge");
+    if (badge) { badge.className = "badge vbadge v" + v; badge.textContent = `已標 ${v} · ${LABEL[v]}`; }
     card.querySelectorAll("button.v").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
   }
   paintProgress();
@@ -352,6 +368,20 @@ document.getElementById("chips").addEventListener("click", (event) => {
   render();
 });
 
+// A pending list (scripts/newclip_pending.py) says up front what it is and which of its two batches a card is in.
+if (DATA.selection) {
+  const chips = document.getElementById("chips");
+  [["new", `全新事件 ${DATA.selection.counts.new}`], ["rejudge", `需重判 ${DATA.selection.counts.rejudge}`]]
+    .forEach(([kind, text]) => {
+      const button = document.createElement("button");
+      button.dataset.filter = kind;
+      button.textContent = text;
+      chips.appendChild(button);
+    });
+  const note = document.getElementById("note-top");
+  if (note) note.insertAdjacentHTML("afterend", `<p class="note-top" id="selection-note">${DATA.selection.note}</p>`);
+}
+
 document.getElementById("next").onclick = () => { const id = nextOpen(current); if (id) scrollTo(id); };
 document.getElementById("prev").onclick = () => move(-1);
 document.getElementById("reset").onclick = () => {
@@ -378,7 +408,7 @@ function verdictRows() {
       vehicle_id: e.vehicle_id, vehicle_kind: e.vehicle_kind,
       pedestrian_id: e.pedestrian_id, pedestrian_state: e.pedestrian_state,
       contact_s: e.contact_s, verdict: rec.v || null, note: rec.note || "",
-      decided_at: rec.at || null,
+      origin: e.origin || null, decided_at: rec.at || null,
     };
   });
 }
