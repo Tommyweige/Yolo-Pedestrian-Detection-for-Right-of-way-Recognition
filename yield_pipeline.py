@@ -6,6 +6,9 @@ Segmentation needs the labeling environment (transformers) and tracking the mode
 which the GUI interpreter has, so every step is a subprocess; the interpreter comes from TRAFFIC_LABELING_PYTHON /
 TRAFFIC_MODERN_PYTHON, else the current one.
 
+The rule step runs the rule's own command line with no construction flag, so the GUI reports whatever construction the
+rule defaults to (the candidate list: every vehicle/pedestrian contact, repeats of one pair merged).
+
 `scripts/run_pipeline.py` is deliberately not reused: it is a batch driver over a folder of videos, with its own
 run directory and an overlay-video step, which does not fit a GUI that owns the file list, the output folder and the
 progress protocol. See docs/adr/0004-gui-yield-image-rule-wiring.md.

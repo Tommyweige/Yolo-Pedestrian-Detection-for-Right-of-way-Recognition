@@ -89,6 +89,36 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(steps[0].command[steps[0].command.index("--model") + 1], str(self.model))
 
 
+class ConstructionTest(unittest.TestCase):
+    """The rule step leaves the construction to the rule's defaults, so the GUI reports what the rule reports."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.model = Path(self.temp.name) / "model"
+        self.model.mkdir()
+
+    def rule(self):
+        steps = yield_pipeline.plan("clip.mp4", Path(self.temp.name) / "work",
+                                    {"TRAFFIC_CROSSWALK_MODEL": str(self.model)})
+        return steps[2]
+
+    def test_the_rule_step_passes_no_construction_flag(self):
+        rule = self.rule()
+        self.assertNotIn("--one-event-per-vehicle", rule.command)
+        self.assertNotIn("--contact-dedup", rule.command)
+        self.assertNotIn("--include-waiting", rule.command)
+
+    def test_the_defaults_the_gui_inherits_are_the_candidate_list(self):
+        import yield_image_rule
+
+        params = yield_image_rule.Params(fps=30.0, src_size=(1920, 1080))
+        self.assertTrue(params.report_every_contact)
+        self.assertEqual(params.contact_dedup, "pair")
+        self.assertAlmostEqual(params.contact_dedup_s, 1.25)
+        self.assertAlmostEqual(params.min_inside_person_heights, 0.03)
+
+
 class WorkspaceTest(unittest.TestCase):
     def test_each_video_gets_a_folder_named_after_it(self):
         self.assertEqual(yield_pipeline.workspace("out", "clips/影片 1.mp4"),
