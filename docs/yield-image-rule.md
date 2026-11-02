@@ -34,6 +34,9 @@ same kind with median box IoU >= 0.45, or a new id starting within 0.5 s where t
 `scripts/eval_rule_events.py`): the matching tolerance is derived from the labels-vs-predictions residual distribution
 (1.25 s on the current 7 clips), labels closer than the tolerance are one incident, and duplicate reports are measured on the
 tracks, not on vehicle ids. Numbers from the labelled clips are in-sample.
+The same events can also be scored with the literature's event-level IoU (EIoU, Crosswalk) instead of the time tolerance:
+`scripts/eval_eiou.py`, reported side by side with the 1.25 s numbers in `docs/eval-eiou.md`; it is the stricter of the two
+and it cannot score a label whose vehicle is not unique (5 of the 17 labels).
 **Definition (user decision, 2026-10-13): a pedestrian merely waiting at the edge does not count.** A pedestrian counts only if
 their foot is at least 0.03 person heights inside the crosswalk mask at some frame of the contact with the vehicle (from its
 start to 1 s after it ends), so stepping onto the crosswalk as a vehicle passes counts and standing still at the edge does not.
