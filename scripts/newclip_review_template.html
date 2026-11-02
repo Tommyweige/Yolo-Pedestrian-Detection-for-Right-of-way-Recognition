@@ -5,487 +5,348 @@
 <title>__TITLE__</title>
 <style>
   :root {
-    --bg: #14171c; --card: #1b1f26; --card2: #21262f; --line: #2c333d;
-    --text: #e6e9ee; --dim: #9aa4b2; --dim2: #6f7a89;
-    --a: #2e9e63; --b: #b8862a; --c: #b8452a; --d: #5a6473;
-    --accent: #4aa3ff; --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    --head-h: 124px;
+    --bg: #14171c; --panel: #1b1f26; --panel2: #232831; --line: #2e3540;
+    --text: #e8ebf0; --dim: #a1abb9; --dim2: #727d8c;
+    --ok: #2e9e63; --bad: #c4462b; --accent: #4aa3ff;
+    --car: #3cd23c; --ped: #f05050;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.62 "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif; }
-  a { color: var(--accent); }
-  code, .mono { font-family: var(--mono); }
-
-  header { position: sticky; top: 0; z-index: 30; background: rgba(20,23,28,.96);
-    backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); padding: 12px 24px 10px; }
-  .head-top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
-  h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .3px; }
-  .sub { color: var(--dim); font-size: 12.5px; }
-  .progress { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 10px; }
-  .bar { flex: 1; height: 6px; background: var(--card2); border-radius: 3px; overflow: hidden; display: flex; }
-  .bar span { display: block; height: 100%; }
-  .bar .bA { background: var(--a); } .bar .bB { background: var(--b); }
-  .bar .bC { background: var(--c); } .bar .bD { background: var(--d); }
-  .tally { font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--dim); white-space: nowrap; }
-  .tally b { color: var(--text); font-size: 14px; }
-
-  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 9px; }
-  .chips { display: flex; gap: 6px; }
-  button { font: inherit; font-size: 13px; color: var(--text); background: var(--card2);
-    border: 1px solid var(--line); border-radius: 7px; padding: 5px 11px; cursor: pointer; }
-  button:hover { border-color: #48525f; background: #262c36; }
-  button.on { border-color: var(--accent); color: #cfe4ff; background: #1d2c3f; }
-  button.ghost { background: transparent; }
-  .spacer { flex: 1; }
-  .legend { display: flex; gap: 12px; font-size: 12.5px; color: var(--dim); flex-wrap: wrap; }
-  .legend b { color: var(--text); }
-
-  main { max-width: 1180px; margin: 0 auto; padding: 20px 24px 80px; }
-  .note-top { color: var(--dim); font-size: 13px; margin: 0 0 18px; }
-  .note-top code { color: #c8d2e0; }
-
-  article.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-    margin: 0 0 22px; scroll-margin-top: calc(var(--head-h) + 12px); }
-  article.card.active { border-color: #3c4a5c; box-shadow: 0 0 0 1px #3c4a5c inset; }
-  article.card.done-A { border-left: 4px solid var(--a); }
-  article.card.done-B { border-left: 4px solid var(--b); }
-  article.card.done-C { border-left: 4px solid var(--c); }
-  article.card.done-D { border-left: 4px solid var(--d); }
-
-  .card-head { display: flex; gap: 10px 14px; align-items: baseline; padding: 13px 16px 10px; flex-wrap: wrap;
-    border-bottom: 1px solid var(--line); }
-  .num { font-family: var(--mono); font-size: 20px; font-weight: 700; color: #fff; letter-spacing: .5px; }
-  .card-head h2 { font-size: 15.5px; font-weight: 600; margin: 0; flex: 1 1 auto; }
-  .meta { color: var(--dim); font-size: 13px; font-family: var(--mono); white-space: nowrap; }
-  .badge { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
-  .badge.new { color: #ffd479; border-color: #6a5320; background: #2a2313; }
-  .badge.vA { color: #8ce0b0; border-color: #2b5f43; } .badge.vB { color: #e8c076; border-color: #6a5320; }
-  .badge.vC { color: #f0a08a; border-color: #6d3220; } .badge.vD { color: #b9c2cf; border-color: #3a424e; }
-  .badge.origin-new { color: #ffd479; border-color: #6a5320; background: #2a2313; }
-  .badge.origin-rejudge { color: #f0a08a; border-color: #6d3220; background: #2a1b1b; }
-  .prior { margin: 8px 16px 0; padding: 7px 10px; border-radius: 7px; background: #2a2313; border: 1px solid #6a5320;
-    color: #e8c076; font-size: 12.5px; line-height: 1.55; }
-  .prior b { color: #fff; }
-  .prior.near { background: #1e2630; border-color: #3a4552; color: #b9c6d6; }
-
-  .media { padding: 14px 16px 4px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  figure { margin: 0; }
-  figure img { width: 100%; display: block; border-radius: 8px; border: 1px solid var(--line); background: #000; }
-  figcaption { color: var(--dim); font-size: 12px; margin-top: 5px; }
-  .strip-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--line); background: #000; max-width: 100%; }
-  .strip-wrap img { width: auto; max-width: none; height: 300px; display: block; border: 0; border-radius: 0; }
-  details summary { cursor: pointer; color: var(--dim); font-size: 12.5px; }
-  details summary:hover { color: var(--text); }
-  details img { margin-top: 8px; }
-
-  .body { display: grid; grid-template-columns: 1.35fr 1fr; gap: 18px; padding: 6px 16px 0; }
-  @media (max-width: 900px) { .body { grid-template-columns: 1fr; } }
-  .body h3 { font-size: 13px; text-transform: none; letter-spacing: .5px; color: var(--dim);
-    margin: 12px 0 7px; font-weight: 600; border-bottom: 1px dashed var(--line); padding-bottom: 5px; }
-  ol.why { margin: 0; padding-left: 20px; }
-  ol.why li { margin: 0 0 6px; font-size: 13.5px; }
-  table.facts { border-collapse: collapse; width: 100%; font-size: 12.5px; }
-  table.facts td { padding: 3px 6px; border-bottom: 1px solid #252b34; vertical-align: top; }
-  table.facts td:first-child { color: var(--dim); white-space: nowrap; width: 1%; }
-  table.facts td:last-child { font-family: var(--mono); font-size: 12px; color: #d3dae5; }
-
-  .timeline { padding: 8px 16px 2px; }
-  .tl-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); }
-  .tl { position: relative; height: 34px; margin-top: 5px; background: var(--card2); border-radius: 5px; overflow: hidden;
-    display: flex; }
-  .tl i { flex: 1 1 0; min-width: 0; display: block; height: 100%; }
-  .tl i.c0 { background: #2b313a; } .tl i.c1 { background: #7a5f1c; } .tl i.c2 { background: #1f7a4d; }
-  .tl i.c3 { background: #101318; }
-  .tl i.q { outline: 1px solid rgba(255,255,255,.18); outline-offset: -1px; }
-  .tl .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #ffd479; }
-  .tl .enter { position: absolute; top: 0; bottom: 0; width: 2px; background: #6ff0a8; }
-  .tl .span { position: absolute; top: 0; bottom: 0; border: 1px solid rgba(255,255,255,.55); border-radius: 3px; }
-  .tl-key { font-size: 11.5px; color: var(--dim2); margin-top: 5px; display: flex; gap: 14px; flex-wrap: wrap; }
-  .tl-key span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px;
-    margin-right: 5px; vertical-align: middle; background: currentColor; }
-
-  .decide { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 16px 14px; margin-top: 8px;
-    border-top: 1px solid var(--line); background: #191d23; position: sticky; bottom: 0; z-index: 6;
-    box-shadow: 0 -10px 18px -12px #000; }
-  .decide .lbl { font-size: 12.5px; color: var(--dim); margin-right: 2px; }
-  button.v { min-width: 104px; text-align: left; padding: 7px 12px; font-size: 13.5px; }
-  button.v:hover { filter: brightness(1.12); }
-  button.v[data-v="A"] { border-color: #2b5f43; } button.v[data-v="A"].on { background: #17402c; border-color: var(--a); }
-  button.v[data-v="B"] { border-color: #6a5320; } button.v[data-v="B"].on { background: #3a2e13; border-color: var(--b); }
-  button.v[data-v="C"] { border-color: #6d3220; } button.v[data-v="C"].on { background: #3d1d14; border-color: var(--c); }
-  button.v[data-v="D"] { border-color: #3a424e; } button.v[data-v="D"].on { background: #2b313a; border-color: var(--d); }
-  .decide input.note { flex: 1; min-width: 200px; font: inherit; font-size: 13px; color: var(--text);
-    background: var(--card2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; }
-  .decide input.note:focus { outline: none; border-color: var(--accent); }
-
-  footer { color: var(--dim2); font-size: 12px; padding: 10px 24px 60px; max-width: 1180px; margin: 0 auto; }
-  footer code { color: var(--dim); }
+    font: 16px/1.6 "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif; }
+  button { font: inherit; color: var(--text); cursor: pointer; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
   .hidden { display: none !important; }
-  .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px);
-    background: #263140; border: 1px solid #3d4a5c; color: #dbe6f5; padding: 9px 16px; border-radius: 9px;
-    font-size: 13px; opacity: 0; pointer-events: none; transition: .2s; z-index: 60; }
-  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ---- the task, always on top */
+  .task { background: #1d2733; border-bottom: 1px solid #33465c; padding: 14px 28px; }
+  .task-inner { max-width: 1100px; margin: 0 auto; display: flex; gap: 24px; align-items: center; }
+  .task p { margin: 0; font-size: 18px; flex: 1; }
+  .task b.ok { color: #7fe0a8; } .task b.bad { color: #ff9b85; }
+  .progress { text-align: right; white-space: nowrap; }
+  .progress .count { font-size: 22px; font-weight: 700; }
+  .progress .left { color: var(--dim); font-size: 14px; }
+  .bar { height: 5px; background: #0f1216; }
+  .bar span { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 18px 28px 40px; }
+
+  /* ---- one event */
+  .where { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; }
+  .where .time { font-size: 20px; font-weight: 700; }
+  .where .video { color: var(--dim); font-size: 14px; }
+  .where .done { margin-left: auto; font-size: 14px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); }
+  .done.v-A { color: #ffb4a3; border-color: #7a3424; } .done.v-C { color: #9be6bb; border-color: #2b6347; }
+  .done.v-B, .done.v-D { color: #c8d0dc; }
+  .look { margin: 0 0 10px; color: var(--dim); font-size: 15px; }
+  .look .car { color: var(--car); font-weight: 700; } .look .ped { color: var(--ped); font-weight: 700; }
+  .clip { display: block; width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #000; }
+  .clip-note { color: var(--dim2); font-size: 13px; margin: 6px 0 0; }
+  .hint { margin: 12px 0 0; padding: 9px 14px; border-radius: 8px; background: #2a2414; border: 1px solid #5f4c1e;
+    color: #ecd08e; font-size: 14.5px; }
+
+  /* ---- the decision */
+  .decide { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0 8px; }
+  .big { border: 2px solid; border-radius: 12px; padding: 16px 18px; text-align: left; background: var(--panel); }
+  .big .t { display: block; font-size: 22px; font-weight: 700; }
+  .big .s { display: block; font-size: 14px; color: var(--dim); margin-top: 2px; }
+  .big kbd { float: right; }
+  .big.ok { border-color: #2b6347; } .big.ok:hover, .big.ok.on { background: #173a29; border-color: var(--ok); }
+  .big.bad { border-color: #7a3424; } .big.bad:hover, .big.bad.on { background: #3d1c14; border-color: var(--bad); }
+  kbd { font-family: ui-monospace, Consolas, monospace; font-size: 13px; color: var(--dim); border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 5px; padding: 0 7px; background: var(--panel2); }
+
+  .minor { display: flex; gap: 10px 18px; align-items: center; flex-wrap: wrap; color: var(--dim2); font-size: 13.5px; }
+  .small { background: none; border: 1px solid var(--line); border-radius: 7px; padding: 3px 10px; color: var(--dim);
+    font-size: 13.5px; }
+  .small:hover, .small.on { color: var(--text); border-color: #56606e; background: var(--panel2); }
+  .small kbd { font-size: 11.5px; padding: 0 5px; margin-left: 4px; }
+  .minor input { flex: 1; min-width: 180px; font: inherit; font-size: 13.5px; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; }
+  .minor input:focus { outline: none; border-color: var(--accent); }
+
+  .nav { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; padding-top: 12px;
+    border-top: 1px solid var(--line); color: var(--dim2); font-size: 13.5px; }
+  .nav button { background: none; border: 1px solid var(--line); border-radius: 7px; padding: 5px 12px; color: var(--dim); }
+  .nav button:hover { color: var(--text); }
+
+  /* ---- layer 2 */
+  details.tech { margin-top: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  details.tech > summary { cursor: pointer; padding: 11px 16px; color: var(--dim); font-size: 15px; }
+  details.tech > summary:hover { color: var(--text); }
+  .tech-body { padding: 0 16px 16px; }
+  .tech-body h3 { font-size: 14px; color: var(--dim); margin: 14px 0 6px; font-weight: 600; }
+  .tech-body ol { margin: 0; padding-left: 20px; font-size: 14px; }
+  .tech-body li { margin-bottom: 5px; }
+  table.facts { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.facts td { padding: 3px 6px; border-bottom: 1px solid #262c35; vertical-align: top; }
+  table.facts td:first-child { color: var(--dim); white-space: nowrap; width: 1%; }
+  .strip { overflow-x: auto; border-radius: 8px; border: 1px solid var(--line); background: #000; }
+  .strip img { height: 240px; display: block; }
+  .tl { position: relative; height: 26px; background: var(--panel2); border-radius: 5px; overflow: hidden; display: flex; }
+  .tl i { flex: 1 1 0; height: 100%; }
+  .tl i.c0 { background: #2b313a; } .tl i.c1 { background: #7a5f1c; } .tl i.c2 { background: #1f7a4d; } .tl i.c3 { background: #101318; }
+  .tl i.q { outline: 1px solid rgba(255,255,255,.2); outline-offset: -1px; }
+  .tl .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #ffd479; }
+  .tl-key { font-size: 12px; color: var(--dim2); margin-top: 4px; }
+  .prior { font-size: 13.5px; color: #e3c27a; margin: 4px 0; }
+
+  /* ---- export page */
+  .finish { text-align: center; padding: 50px 0 20px; }
+  .finish h2 { font-size: 26px; margin: 0 0 6px; }
+  .finish .sum { color: var(--dim); margin: 0 0 26px; font-size: 16px; }
+  .finish .sum b { color: var(--text); }
+  .export-btn { font-size: 20px; font-weight: 700; padding: 14px 34px; border-radius: 12px; border: 2px solid var(--accent);
+    background: #1d2c3f; }
+  .export-btn:hover { background: #24384f; }
+  .finish .after { color: var(--dim2); font-size: 13.5px; margin: 18px auto 0; max-width: 640px; }
+  .open-list { margin: 22px auto 0; max-width: 640px; text-align: left; background: #2a2414; border: 1px solid #5f4c1e;
+    border-radius: 10px; padding: 12px 16px; color: #ecd08e; font-size: 14.5px; }
+  .open-list button { background: none; border: 1px solid #6a5523; color: #ecd08e; border-radius: 6px; padding: 1px 8px;
+    margin: 3px 4px 0 0; font-size: 13.5px; }
+  .tally { display: inline-grid; grid-template-columns: auto auto; gap: 2px 18px; text-align: left; margin: 0 0 24px;
+    font-size: 15px; }
+  .tally span:nth-child(even) { font-weight: 700; text-align: right; }
+  footer { color: var(--dim2); font-size: 12px; text-align: center; padding: 10px 28px 30px; }
+  .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: #263140; border: 1px solid #3d4a5c;
+    padding: 8px 16px; border-radius: 9px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .toast.show { opacity: 1; }
 </style>
 </head>
 <body>
-<header>
-  <div class="head-top">
-    <h1>__TITLE__</h1>
-    <span class="sub">__SUBTEXT__</span>
-    <div class="progress">
-      <div class="bar" id="bar"></div>
-      <span class="tally" id="tally">0 / __TOTAL__</span>
-    </div>
+<div class="task">
+  <div class="task-inner">
+    <p>你要判斷：<b>綠框這台車</b>經過斑馬線的時候，有沒有讓<b>紅框這位行人</b>。<br>
+      有讓（或根本沒擋到行人）→ <b class="ok">沒有違規</b>；沒讓 → <b class="bad">有違規</b>。</p>
+    <div class="progress"><div class="count" id="count"></div><div class="left" id="left"></div></div>
   </div>
-  <div class="controls">
-    <div class="chips" id="chips">
-      <button data-filter="all" class="on">全部 __TOTAL__</button>
-      <button data-filter="open">未標</button>
-      <button data-filter="decided">已標</button>
-    </div>
-    <button class="ghost" id="prev">↑ 上一件</button>
-    <button class="ghost" id="next">↓ 下一件未標</button>
-    <div class="spacer"></div>
-    <button id="export-json">匯出 JSON</button>
-    <button id="export-csv">匯出 CSV</button>
-    <button class="ghost" id="copy-tsv">複製表格</button>
-    <button class="ghost" id="reset">清除</button>
-  </div>
-  <div class="controls legend">
-    <span><b>A</b> 合理（真有車輛未讓行人）</span>
-    <span><b>B</b> 重報（與另一件同一輛車／同一件事）</span>
-    <span><b>C</b> 不合理（誤報）</span>
-    <span><b>D</b> 不確定</span>
-    <span style="color:var(--dim2)">鍵盤：A / B / C / D 判定並跳到下一件未標，J / K 上下移動</span>
-  </div>
-</header>
+</div>
+<div class="bar"><span id="bar"></span></div>
 
 <main>
-<p class="note-top" id="note-top">畫面裡 <b style="color:#3cd23c">綠框</b>是系統追蹤的車輛、<b style="color:#f03c3c">紅框</b>是行人、
-  <b style="color:#ffdc3c">黃線＋藍綠半透明</b>是規則用的那塊斑馬線遮罩。每一件都附「連續幀動畫」與「逐幀膠捲」，
-  兩者都是標記時間前後各 1.5 秒。判斷完直接按右上的 <b>匯出 JSON</b>，結果會存成一個檔；判定會自動存在這個瀏覽器裡，
-  關掉再開還在。</p>
-<div id="cards"></div>
+  <section id="event"></section>
+  <section id="finish" class="finish hidden"></section>
 </main>
-
-<footer>
-  <p>__FOOTER__</p>
-</footer>
-
+<footer>__SUBTEXT__<br>__FOOTER__</footer>
 <div class="toast" id="toast"></div>
 
 <script>
 const DATA = __PAYLOAD__;
 const KEY = "__STORAGE_KEY__";
+// The export keeps the scorer's letters and legend; the page only shows the plain names.
 const LABEL = { A: "合理", B: "重報", C: "不合理", D: "不確定" };
+const SHOWN = { A: "有違規", C: "沒有違規", B: "重複報告", D: "看不出來" };
+const KEYS = { "1": "C", "2": "A", "3": "B", "4": "D" };
+const TOTAL = DATA.events.length;
 
 let store = {};
 try { store = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { store = {}; }
-let filter = "all";
-let current = DATA.events[0].id;
-
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const byId = (id) => DATA.events.find((e) => e.id === id);
 const save = () => localStorage.setItem(KEY, JSON.stringify(store));
-const decided = () => DATA.events.filter((e) => store[e.id] && store[e.id].v).length;
+const verdictOf = (ev) => store[ev.id] && store[ev.id].v;
+const decided = () => DATA.events.filter(verdictOf).length;
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// index TOTAL is the export page
+let index = DATA.events.findIndex((e) => !verdictOf(e));
+if (index < 0) index = TOTAL;
 
 function toast(msg) {
   const el = document.getElementById("toast");
   el.textContent = msg; el.classList.add("show");
-  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 1800);
-}
-
-function timelineHtml(ev) {
-  const first = ev.window[0], last = ev.window[1], span = Math.max(1, last - first);
-  const pct = (f) => ((f - first) / span) * 100;
-  const cells = ev.timeline.map((r) =>
-    `<i class="c${r.c}${r.q ? " q" : ""}" title="${r.t.toFixed(2)}s · ${["不在遮罩旁", "在路緣等", "在斑馬線上", "其中一個框沒偵測到"][r.c]}${r.q ? " · 條件成立" : ""}${r.c === 3 ? "" : ` · 間距 ${r.r} 車寬`}"></i>`).join("");
-  const marks = [
-    `<span class="span" style="left:${pct(ev.contact[0]).toFixed(2)}%;width:${(pct(ev.contact[1]) - pct(ev.contact[0])).toFixed(2)}%"></span>`,
-    `<span class="mark" style="left:${pct(ev.frame).toFixed(2)}%"></span>`,
-  ];
-  if (ev.entered_at) marks.push(`<span class="enter" style="left:${pct(ev.entered_at).toFixed(2)}%"></span>`);
-  return `
-    <div class="tl-head">
-      <span>${ev.timeline[0].t.toFixed(2)}s → ${ev.timeline[ev.timeline.length - 1].t.toFixed(2)}s</span>
-      <span>白框＝接觸 ${ev.contact_s[0].toFixed(2)}–${ev.contact_s[1].toFixed(2)}s</span></div>
-    <div class="tl">${cells}${marks.join("")}</div>
-    <div class="tl-key">
-      <span style="color:#2b313a">不在遮罩旁</span>
-      <span style="color:#7a5f1c">在路緣等</span>
-      <span style="color:#1f7a4d">在斑馬線上</span>
-      <span style="color:#3a4150">其中一個框沒偵測到（追蹤斷點）</span>
-      <span style="color:#ffd479">黃線＝系統標記的那一幀</span>
-      ${ev.entered_at ? `<span style="color:#6ff0a8">綠線＝第一次真正踏入斑馬線（幀 ${ev.entered_at}）</span>` : ""}
-    </div>`;
-}
-
-function cardHtml(ev) {
-  const rec = store[ev.id] || {};
-  const badge = rec.v
-    ? `<span class="badge vbadge v${rec.v}">已標 ${rec.v} · ${LABEL[rec.v]}</span>`
-    : `<span class="badge vbadge new">未看過</span>`;
-  const origin = ev.origin
-    ? `<span class="badge origin-${ev.origin}">${ev.origin === "rejudge" ? "舊判定對不上、需重判" : "全新事件"}</span>`
-    : "";
-  const priors = (ev.priors || []).map((p) => `<div class="prior">舊判定在 <b>${p.time_s.toFixed(3)}s</b>、`
-    + `車 <b>${p.vehicle}</b> → <b>${p.verdict} · ${LABEL[p.verdict] || p.verdict}</b>，`
-    + `跟這一件（${ev.time_s.toFixed(3)}s）差 ${p.delta_s.toFixed(2)}s，超過 1.25s 的容差所以接不上——`
-    + `判這一件時把那個舊判定一起看。${p.note ? `　舊備註：${esc(p.note)}` : ""}</div>`).join("");
-  const n = ev.neighbour;
-  const near = n ? `<div class="prior near">同一支影片附近的判定：<b>${n.time_s.toFixed(3)}s</b>`
-    + `（車 ${n.vehicle_id}／行人 ${n.pedestrian_id}）已判 <b>${n.verdict} · ${LABEL[n.verdict]}</b>，`
-    + `相差 ${n.delta_s.toFixed(2)}s。如果這一件其實是同一件事被拆成兩件，選 B。</div>` : "";
-  const review = (ev.review_reasons || []).length
-    ? `<div class="prior" style="background:#2a1b1b;border-color:#6d3220;color:#f0a08a">規則自己標了待複核：${esc(ev.review_reasons.join("、"))}</div>` : "";
-  return `
-  <article class="card ${rec.v ? "done-" + rec.v : ""}" id="card-${ev.id}" data-id="${ev.id}">
-    <div class="card-head">
-      <span class="num">${ev.id}</span>
-      <h2>${esc(ev.video)}</h2>
-      <span class="meta">${ev.time_s.toFixed(3)}s · 幀 ${ev.frame} · 車 ${ev.vehicle_id} (${esc(ev.vehicle_kind)}) · 行人 ${ev.pedestrian_id}</span>
-      ${badge}${origin}
-    </div>
-    ${priors}${near}${review}
-    <div class="media">
-      <figure>
-        <img src="${ev.media.clip}" alt="${ev.id} 連續幀">
-        <figcaption>連續幀動畫（8 fps，${ev.window[0]}–${ev.window[1]} 幀）。拖慢看車與行人的相對動作；
-          標記時間是 <b>${ev.time_s.toFixed(3)}s</b>。</figcaption>
-      </figure>
-      <details open>
-        <summary>逐幀膠捲（7 張，左右拖曳看完整動作）</summary>
-        <div class="strip-wrap"><img src="${ev.media.strip}" alt="${ev.id} 膠捲"></div>
-      </details>
-      <details>
-        <summary>全景一幀（這一刻的整個畫面）</summary>
-        <figure><img src="${ev.media.wide}" alt="${ev.id} 全景"></figure>
-      </details>
-    </div>
-    <div class="timeline">${timelineHtml(ev)}</div>
-    <div class="body">
-      <section>
-        <h3>為什麼判成事件</h3>
-        <ol class="why">${ev.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ol>
-      </section>
-      <section>
-        <h3>數值（規則門檻在括號裡）</h3>
-        <table class="facts">${ev.facts.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>
-      </section>
-    </div>
-    <div class="decide">
-      <span class="lbl">判斷</span>
-      ${["A", "B", "C", "D"].map((v) => `<button class="v${rec.v === v ? " on" : ""}" data-v="${v}" data-id="${ev.id}">${v} · ${LABEL[v]}</button>`).join("")}
-      <input class="note" data-id="${ev.id}" placeholder="備註（可空）" value="${esc(rec.note || "")}">
-    </div>
-  </article>`;
-}
-
-function render() {
-  const list = DATA.events.filter((e) => {
-    const v = store[e.id] && store[e.id].v;
-    return filter === "all" || (filter === "open" && !v) || (filter === "decided" && v)
-      || (filter === "new" && e.origin === "new") || (filter === "rejudge" && e.origin === "rejudge");
-  });
-  document.getElementById("cards").innerHTML = list.map(cardHtml).join("");
-  paintProgress();
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 1600);
 }
 
 function paintProgress() {
-  const counts = { A: 0, B: 0, C: 0, D: 0 };
-  DATA.events.forEach((e) => { const v = store[e.id] && store[e.id].v; if (v) counts[v]++; });
-  const total = DATA.events.length;
-  document.getElementById("bar").innerHTML =
-    ["A", "B", "C", "D"].map((v) => `<span class="b${v}" style="width:${(counts[v] / total) * 100}%"></span>`).join("");
-  document.getElementById("tally").innerHTML =
-    `<b>${decided()}</b> / ${total} 　A ${counts.A} · B ${counts.B} · C ${counts.C} · D ${counts.D}`;
+  const n = decided();
+  document.getElementById("count").textContent = index < TOTAL ? `第 ${index + 1} / ${TOTAL} 件` : `${TOTAL} 件 · 匯出`;
+  document.getElementById("left").textContent = n === TOTAL ? "全部判完了" : `還有 ${TOTAL - n} 件沒判`;
+  document.getElementById("bar").style.width = `${(n / TOTAL) * 100}%`;
 }
 
-function setVerdict(id, v) {
-  const rec = store[id] || (store[id] = {});
-  rec.v = v;
-  rec.at = new Date().toISOString();
-  rec.note = rec.note || "";
-  save();
-  const card = document.getElementById("card-" + id);
-  if (card) {
-    card.className = card.className.replace(/done-[ABCD]/, "").trim() + " done-" + v;
-    const badge = card.querySelector(".vbadge");
-    if (badge) { badge.className = "badge vbadge v" + v; badge.textContent = `已標 ${v} · ${LABEL[v]}`; }
-    card.querySelectorAll("button.v").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
+function hints(ev) {
+  const out = [];
+  const n = ev.neighbour;
+  if (n) out.push(`同一支影片在 ${n.time_s.toFixed(1)} 秒（差 ${n.delta_s.toFixed(1)} 秒）已經判過一件。`
+    + `如果這兩件其實是同一台車、同一次經過，按「重複報告」。`);
+  (ev.priors || []).forEach((p) => out.push(`以前在 ${p.time_s.toFixed(1)} 秒判過一筆「${SHOWN[p.verdict] || p.verdict}」，`
+    + `時間對不太上，請重新看一次再判。`));
+  return out.map((t) => `<p class="hint">${esc(t)}</p>`).join("");
+}
+
+function techHtml(ev) {
+  const first = ev.window[0], span = Math.max(1, ev.window[1] - first);
+  const cells = ev.timeline.map((r) => `<i class="c${r.c}${r.q ? " q" : ""}"></i>`).join("");
+  const mark = `<span class="mark" style="left:${(((ev.frame - first) / span) * 100).toFixed(2)}%"></span>`;
+  const priors = (ev.priors || []).map((p) => `<p class="prior">舊判定：${p.time_s.toFixed(3)}s、車 ${p.vehicle} → `
+    + `${p.verdict}（${LABEL[p.verdict] || ""}），差 ${p.delta_s.toFixed(2)}s，超過 1.25s 容差接不上。`
+    + `${p.note ? "舊備註：" + esc(p.note) : ""}</p>`).join("");
+  const review = (ev.review_reasons || []).length ? `<p class="prior">規則自己標了待複核：${esc(ev.review_reasons.join("、"))}</p>` : "";
+  return `
+    <details class="tech" id="tech">
+      <summary>系統為什麼認為這是一件「未讓行人」（技術細節，判斷時不一定要看）<kbd style="margin-left:8px">T</kbd></summary>
+      <div class="tech-body">
+        ${priors}${review}
+        <h3>理由</h3>
+        <ol>${ev.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ol>
+        <h3>數值（括號裡是規則門檻）</h3>
+        <table class="facts">${ev.facts.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>
+        <h3>行人狀態時間軸（${ev.timeline[0].t.toFixed(2)}s → ${ev.timeline[ev.timeline.length - 1].t.toFixed(2)}s）</h3>
+        <div class="tl">${cells}${mark}</div>
+        <div class="tl-key">灰＝不在斑馬線旁、黃褐＝在路緣、綠＝在斑馬線上、黑＝沒偵測到；白框格＝規則條件成立；黃線＝系統標記的時刻</div>
+        <h3>逐格（同一段，7 張，左右捲動）</h3>
+        <div class="strip"><img src="${ev.media.strip}" alt="逐格"></div>
+        <p class="clip-note">車 id ${ev.vehicle_id}（${esc(ev.vehicle_kind)}）· 行人 id ${ev.pedestrian_id} · 幀 ${ev.frame} · 編號 ${ev.id}</p>
+      </div>
+    </details>`;
+}
+
+function eventHtml(ev) {
+  const v = verdictOf(ev);
+  const rec = store[ev.id] || {};
+  const small = (code, text, why) => `<button class="small${v === code ? " on" : ""}" data-v="${code}" title="${why}">`
+    + `${text}<kbd>${Object.keys(KEYS).find((k) => KEYS[k] === code)}</kbd></button>`;
+  return `
+    <div class="where">
+      <span class="time">影片的 ${ev.time_s.toFixed(1)} 秒</span>
+      <span class="video">${esc(ev.video)}</span>
+      ${v ? `<span class="done v-${v}">你判了：${SHOWN[v]}</span>` : ""}
+    </div>
+    <p class="look">看 <span class="car">綠框「這台車」</span> 和 <span class="ped">紅框「這位行人」</span>。
+      下面是系統標記時刻前後各約 1.5 秒，會自動重播。</p>
+    <img class="clip" src="${ev.media.clip}" alt="事件前後的連續畫面">
+    <p class="clip-note">畫面左上角寫著現在是第幾秒、離系統標記的時刻還有多久。黃色斑馬線輪廓是系統認定的斑馬線範圍。</p>
+    ${hints(ev)}
+    <div class="decide">
+      <button class="big ok${v === "C" ? " on" : ""}" data-v="C"><kbd>1</kbd>
+        <span class="t">沒有違規</span><span class="s">車有讓行人，或車根本沒擋到行人</span></button>
+      <button class="big bad${v === "A" ? " on" : ""}" data-v="A"><kbd>2</kbd>
+        <span class="t">有違規</span><span class="s">行人在走斑馬線，車沒停下來讓他</span></button>
+    </div>
+    <div class="minor">
+      <span>都不是的話：</span>
+      ${small("B", "重複報告", "同一台車、同一次經過，已經在別件報過了")}
+      ${small("D", "看不出來", "畫面太糊、被擋住，或資訊不夠判斷")}
+      <input id="note" placeholder="備註（可不填）" value="${esc(rec.note || "")}">
+    </div>
+    ${techHtml(ev)}
+    <div class="nav">
+      <button id="prev" ${index === 0 ? "disabled" : ""}>← 上一件</button>
+      <span>判完會自動跳到下一件 · <kbd>←</kbd> <kbd>→</kbd> 切換</span>
+      <button id="next">${index === TOTAL - 1 ? "到匯出頁 →" : "下一件 →"}</button>
+    </div>`;
+}
+
+function finishHtml() {
+  const counts = { A: 0, B: 0, C: 0, D: 0 };
+  DATA.events.forEach((e) => { const v = verdictOf(e); if (v) counts[v]++; });
+  const open = DATA.events.map((e, i) => [e, i]).filter(([e]) => !verdictOf(e));
+  const n = decided();
+  return `
+    <h2>${n === TOTAL ? `${TOTAL} 件都判完了` : `還有 ${TOTAL - n} 件沒判`}</h2>
+    <p class="sum">已判 <b>${n}</b> / ${TOTAL} 件。判定已自動存在這個瀏覽器裡；按下面的按鈕存成檔案交出去。</p>
+    <div class="tally">
+      <span>沒有違規</span><span>${counts.C}</span><span>有違規</span><span>${counts.A}</span>
+      <span>重複報告</span><span>${counts.B}</span><span>看不出來</span><span>${counts.D}</span>
+    </div><br>
+    <button class="export-btn" id="export-json">匯出 JSON</button>
+    ${open.length ? `<div class="open-list">沒判的會以空白匯出。要先補判，點編號回去：<br>
+      ${open.map(([e, i]) => `<button data-go="${i}">第 ${i + 1} 件（${e.time_s.toFixed(1)} 秒）</button>`).join("")}</div>` : ""}
+    <p class="after">下載的檔名是 <code>__EXPORT_PREFIX__-verdicts-&lt;時間&gt;.json</code>，格式跟舊頁面一樣，
+      算分程式 <code>scripts/newclip_score.py --verdicts</code> 直接吃。<br>
+      <button class="small" id="back">← 回到第 ${TOTAL} 件</button>
+      <button class="small" id="reset">清除全部判定</button></p>`;
+}
+
+function render() {
+  const eventEl = document.getElementById("event");
+  const finishEl = document.getElementById("finish");
+  if (index < TOTAL) {
+    const tech = document.getElementById("tech");
+    const keepOpen = tech && tech.open;
+    eventEl.innerHTML = eventHtml(DATA.events[index]);
+    if (keepOpen) document.getElementById("tech").open = true;
+    eventEl.classList.remove("hidden"); finishEl.classList.add("hidden");
+  } else {
+    finishEl.innerHTML = finishHtml();
+    finishEl.classList.remove("hidden"); eventEl.classList.add("hidden");
   }
   paintProgress();
+  window.scrollTo(0, 0);
 }
 
-function nextOpen(after) {
-  const events = DATA.events;
-  const from = events.findIndex((e) => e.id === after);
-  for (let step = 1; step <= events.length; step++) {
-    const e = events[(from + step) % events.length];
-    if (!(store[e.id] && store[e.id].v)) return e.id;
-  }
-  return null;
+function go(i) { index = Math.max(0, Math.min(TOTAL, i)); render(); }
+
+function nextAfterVerdict() {
+  for (let i = index + 1; i < TOTAL; i++) if (!verdictOf(DATA.events[i])) return i;
+  for (let i = 0; i < index; i++) if (!verdictOf(DATA.events[i])) return i;
+  return TOTAL;
 }
 
-function scrollTo(id) {
-  const card = document.getElementById("card-" + id);
-  if (!card) return;
-  current = id;
-  card.scrollIntoView({ behavior: "smooth", block: "start" });
-  document.querySelectorAll("article.card").forEach((c) => c.classList.toggle("active", c.id === "card-" + id));
-}
-
-function move(delta) {
-  const events = DATA.events;
-  const i = events.findIndex((e) => e.id === current);
-  const next = events[Math.min(events.length - 1, Math.max(0, i + delta))];
-  scrollTo(next.id);
-}
-
-document.getElementById("cards").addEventListener("click", (event) => {
-  const button = event.target.closest("button.v");
-  if (!button) return;
-  setVerdict(button.dataset.id, button.dataset.v);
-  const after = nextOpen(button.dataset.id);
-  if (after) setTimeout(() => scrollTo(after), 120);
-  else toast(`${DATA.events.length} 件都標完了，可以匯出了`);
-});
-
-document.getElementById("cards").addEventListener("input", (event) => {
-  const input = event.target.closest("input.note");
-  if (!input) return;
-  const rec = store[input.dataset.id] || (store[input.dataset.id] = {});
-  rec.note = input.value;
+function judge(code) {
+  const ev = DATA.events[index];
+  const rec = store[ev.id] || (store[ev.id] = {});
+  rec.v = code; rec.at = new Date().toISOString(); rec.note = rec.note || "";
   save();
-});
-
-document.getElementById("chips").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-filter]");
-  if (!button) return;
-  filter = button.dataset.filter;
-  document.querySelectorAll("#chips button").forEach((b) => b.classList.toggle("on", b === button));
-  render();
-});
-
-// A pending list (scripts/newclip_pending.py) says up front what it is and which of its two batches a card is in.
-if (DATA.selection) {
-  const chips = document.getElementById("chips");
-  [["new", `全新事件 ${DATA.selection.counts.new}`], ["rejudge", `需重判 ${DATA.selection.counts.rejudge}`]]
-    .forEach(([kind, text]) => {
-      const button = document.createElement("button");
-      button.dataset.filter = kind;
-      button.textContent = text;
-      chips.appendChild(button);
-    });
-  const note = document.getElementById("note-top");
-  if (note) note.insertAdjacentHTML("afterend", `<p class="note-top" id="selection-note">${DATA.selection.note}</p>`);
+  toast(`第 ${index + 1} 件：${SHOWN[code]}`);
+  setTimeout(() => go(nextAfterVerdict()), 150);
 }
 
-document.getElementById("next").onclick = () => { const id = nextOpen(current); if (id) scrollTo(id); };
-document.getElementById("prev").onclick = () => move(-1);
-document.getElementById("reset").onclick = () => {
-  if (!confirm(`清除 ${DATA.events.length} 件的判定與備註？（匯出過的檔案不受影響）`)) return;
-  store = {}; save(); render(); toast("已清除");
-};
-
-function exportBase() {
-  return {
-    schema: DATA.schema,
-    generated_at: DATA.generated_at,
-    source: DATA.source,
-    params: DATA.params,
-    legend: LABEL,
-    counts: { total: DATA.events.length, decided: decided() },
-  };
-}
-
-function verdictRows() {
-  return DATA.events.map((e) => {
+function exportJson() {
+  const verdicts = DATA.events.map((e) => {
     const rec = store[e.id] || {};
-    return {
-      id: e.id, video: e.video, time_s: e.time_s, frame: e.frame,
+    return { id: e.id, video: e.video, time_s: e.time_s, frame: e.frame,
       vehicle_id: e.vehicle_id, vehicle_kind: e.vehicle_kind,
       pedestrian_id: e.pedestrian_id, pedestrian_state: e.pedestrian_state,
       contact_s: e.contact_s, verdict: rec.v || null, note: rec.note || "",
-      origin: e.origin || null, decided_at: rec.at || null,
-    };
+      origin: e.origin || null, decided_at: rec.at || null };
   });
-}
-
-function download(name, text, type) {
-  const blob = new Blob([text], { type });
-  const url = URL.createObjectURL(blob);
+  const payload = { schema: DATA.schema, generated_at: DATA.generated_at, source: DATA.source, params: DATA.params,
+    legend: LABEL, counts: { total: TOTAL, decided: decided() }, verdicts };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
-  a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  a.href = URL.createObjectURL(blob);
+  a.download = `__EXPORT_PREFIX__-verdicts-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}.json`;
+  a.click();
+  toast(`已匯出 ${decided()} / ${TOTAL} 件`);
 }
 
-const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-
-document.getElementById("export-json").onclick = () => {
-  const payload = { ...exportBase(), verdicts: verdictRows() };
-  download(`__EXPORT_PREFIX__-verdicts-${stamp()}.json`, JSON.stringify(payload, null, 2), "application/json");
-  toast(`已匯出 ${decided()} / ${DATA.events.length} 件的判定`);
-};
-
-document.getElementById("export-csv").onclick = () => {
-  const head = ["id", "video", "time_s", "frame", "vehicle_id", "vehicle_kind", "pedestrian_id",
-                "pedestrian_state", "contact_start_s", "contact_end_s", "verdict", "note", "decided_at"];
-  const rows = verdictRows().map((r) => [r.id, r.video, r.time_s, r.frame, r.vehicle_id, r.vehicle_kind,
-    r.pedestrian_id, r.pedestrian_state, r.contact_s[0], r.contact_s[1], r.verdict || "", r.note, r.decided_at || ""]);
-  const csv = "\ufeff" + [head, ...rows].map((r) => r.map((c) => {
-    const s = String(c ?? "");
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  }).join(",")).join("\r\n");
-  download(`__EXPORT_PREFIX__-verdicts-${stamp()}.csv`, csv, "text/csv;charset=utf-8");
-  toast("已匯出 CSV（Excel 可直接開）");
-};
-
-document.getElementById("copy-tsv").onclick = async () => {
-  const lines = ["id\t影片\t時間\t車\t行人\t判定\t備註"];
-  verdictRows().forEach((r) => lines.push([r.id, r.video, r.time_s, r.vehicle_id, r.pedestrian_id,
-    r.verdict || "", r.note].join("\t")));
-  try { await navigator.clipboard.writeText(lines.join("\n")); toast(`已複製 ${verdictRows().length} 列 TSV`); }
-  catch (e) { toast("這個瀏覽器不給剪貼簿權限，請用匯出"); }
-};
-
-document.addEventListener("keydown", (event) => {
-  if (event.target.matches("input, textarea")) return;
-  const key = event.key.toUpperCase();
-  if (LABEL[key]) {
-    const card = document.getElementById("card-" + current);
-    if (!card) return;
-    setVerdict(current, key);
-    const after = nextOpen(current);
-    if (after) scrollTo(after);
-    event.preventDefault();
-  } else if (key === "J" || event.key === "ArrowDown") { move(1); event.preventDefault(); }
-  else if (key === "K" || event.key === "ArrowUp") { move(-1); event.preventDefault(); }
+document.addEventListener("click", (event) => {
+  const t = event.target;
+  const vb = t.closest("button[data-v]");
+  if (vb) return judge(vb.dataset.v);
+  const gb = t.closest("button[data-go]");
+  if (gb) return go(Number(gb.dataset.go));
+  const id = t.closest("button") && t.closest("button").id;
+  if (id === "prev") go(index - 1);
+  else if (id === "next") go(index + 1);
+  else if (id === "back") go(TOTAL - 1);
+  else if (id === "export-json") exportJson();
+  else if (id === "reset" && confirm(`清除 ${TOTAL} 件的判定與備註？（匯出過的檔案不受影響）`)) {
+    store = {}; save(); go(0);
+  }
 });
 
-window.addEventListener("scroll", () => {
-  let best = null;
-  document.querySelectorAll("article.card").forEach((card) => {
-    const top = card.getBoundingClientRect().top;
-    if (top < 160 && (!best || top > best.top)) best = { id: card.dataset.id, top };
-  });
-  if (best && best.id !== current) {
-    current = best.id;
-    document.querySelectorAll("article.card").forEach((c) => c.classList.toggle("active", c.id === "card-" + best.id));
+document.addEventListener("input", (event) => {
+  if (event.target.id !== "note" || index >= TOTAL) return;
+  const ev = DATA.events[index];
+  (store[ev.id] || (store[ev.id] = {})).note = event.target.value;
+  save();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.target.matches("input, textarea")) {
+    if (event.key === "Escape" || event.key === "Enter") event.target.blur();
+    return;
   }
-}, { passive: true });
+  if (event.ctrlKey || event.altKey || event.metaKey) return;
+  if (KEYS[event.key] && index < TOTAL) { judge(KEYS[event.key]); event.preventDefault(); }
+  else if (event.key === "ArrowRight") { go(index + 1); event.preventDefault(); }
+  else if (event.key === "ArrowLeft") { go(index - 1); event.preventDefault(); }
+  else if (event.key.toLowerCase() === "t" && index < TOTAL) {
+    const tech = document.getElementById("tech"); tech.open = !tech.open;
+  }
+});
 
 render();
-
-// The header is sticky and its height changes when the controls wrap at narrow widths.
-function syncHeadHeight() {
-  const h = document.querySelector("header");
-  if (h) document.documentElement.style.setProperty("--head-h", h.offsetHeight + "px");
-}
-syncHeadHeight();
-window.addEventListener("resize", syncHeadHeight);
-window.addEventListener("load", syncHeadHeight);
 </script>
 </body>
 </html>

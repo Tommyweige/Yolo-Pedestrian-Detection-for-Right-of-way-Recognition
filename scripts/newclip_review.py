@@ -32,6 +32,7 @@ TEMPLATE = Path(__file__).resolve().parent / "newclip_review_template.html"
 SCHEMA = "yolo-ped/newclip-review@1"
 FONT_PATH = "C:/Windows/Fonts/msjh.ttc"
 ROLE_NAMES = {"dev": "開發集", "validation": "驗證集"}
+KIND_NAMES = {"car": "汽車", "motorcycle": "機車", "bus": "公車", "truck": "貨車", "bicycle": "自行車"}
 VERDICT_LEGEND = [
     ("A", "合理：這確實是車輛未讓行人，該報", "precision 的分子"),
     ("B", "重報：情境沒問題，但同一件事已經報過／被拆成好幾件", "不算命中、不算誤報，算重報"),
@@ -195,8 +196,9 @@ def annotate(frame_bgr, crop, component, vbox, pbox, vehicle_id, vehicle_kind, p
         out[where] = (0.72 * out[where] + 0.28 * tint[where]).astype(np.uint8)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(out, contours, -1, (60, 220, 255), 2)
-    for box, colour, label in ((vbox, (60, 210, 60), f"車 {vehicle_id} · {vehicle_kind}"),
-                               (pbox, (60, 60, 240), f"行人 {pedestrian_id}")):
+    # Plain names, not track ids: the judge has to see at a glance which two of the people on screen to watch.
+    for box, colour, label in ((vbox, (60, 210, 60), f"這台車（{KIND_NAMES.get(vehicle_kind, vehicle_kind)}）"),
+                               (pbox, (60, 60, 240), "這位行人")):
         if box is None:
             continue
         ax0, ay0 = int(box[0]) - x0, int(box[1]) - y0
@@ -208,7 +210,7 @@ def annotate(frame_bgr, crop, component, vbox, pbox, vehicle_id, vehicle_kind, p
         left, top, right, bottom = draw.textbbox((0, 0), label, font=fnt)
         ty = max(0, ay0 - (bottom - top) - 8)
         lx = min(max(0, ax0), max(0, clip_w - (right - left) - 10))
-        draw.rectangle((lx, ty, lx + (right - left) + 8, ty + (bottom - top) + 8), fill=colour + (230,))
+        draw.rectangle((lx, ty, lx + (right - left) + 8, ty + (bottom - top) + 8), fill=colour[::-1] + (230,))  # BGR -> RGB
         draw.text((lx + 4, ty + 2), label, font=fnt, fill=(10, 10, 10, 255))
         out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
     return put_text(out, hud, size)
@@ -302,11 +304,17 @@ def build_event(number, event, clip, media_dir):
         return {"on_crosswalk": "行人在斑馬線上", "waiting_at_edge": "行人在路緣",
                 None: "行人不在斑馬線遮罩附近"}[record.get("state")]
 
+    def when(frame):
+        offset = (frame - event["frame"]) / fps
+        near = "系統標記的時刻" if abs(offset) < 0.07 else f"標記{'前' if offset < 0 else '後'} {abs(offset):.1f} 秒"
+        return f"{frame / fps:.2f} 秒（{near}）"
+
+    # Words only on the frames; the rule's numbers stay on the page's collapsed technical section.
     def hud_for(record):
-        ratio = f"{record['ratio']:.1f} 車寬" if record.get("ratio") is not None else "-"
-        return [(f"{record['t']:.2f}s · 幀 {record['frame']}", (255, 255, 255)),
-                (f"{label_of(record)} · 間距 {ratio}" if record.get("ratio") is not None else label_of(record),
-                 (170, 255, 190) if record.get("qualifies") else (200, 200, 200))]
+        flagged = bool(record.get("qualifies"))
+        return [(when(record["frame"]), (255, 255, 255)),
+                ("系統：車在斑馬線上、離行人很近" if flagged else label_of(record),
+                 (255, 220, 90) if flagged else (205, 205, 205))]
     # ---- continuous-frames animation
     step = max(1, int(round(fps / 8)))
     sampled = [f for f in sorted(video_frames) if (f - window[0]) % step == 0]
@@ -333,10 +341,7 @@ def build_event(number, event, clip, media_dir):
         record = by_frame.get(frame) or frame_facts(clip, frame, event["vehicle_id"], event["pedestrian_id"]) or {}
         _, vbox = clip.box(frame, event["vehicle_id"])
         _, pbox = clip.box(frame, event["pedestrian_id"])
-        state = label_of(record)
-        hud = [(f"{(frame - event['frame']) / fps:+.2f}s · {frame / fps:.2f}s", (255, 255, 255)),
-               (f"{state} · {record['ratio']:.1f} 車寬" if record.get("ratio") is not None else state,
-                (170, 255, 190) if record.get("qualifies") else (205, 205, 205))]
+        hud = hud_for({"frame": frame, **record})
         image = annotate(video_frames[frame], crop, record.get("component"), vbox, pbox,
                          event["vehicle_id"], event["vehicle_kind"], event["pedestrian_id"], hud, size)
         tile = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -520,9 +525,11 @@ def operation_lines(storage_key):
         "",
         "| 按鍵 | 作用 |",
         "|---|---|",
-        "| `A` `B` `C` `D` | 標記目前這件，並自動跳到下一件未標 |",
-        "| `J` / `K`、`↓` / `↑` | 上下一件 |",
-        "| 點上方篩選 chips | 只看未判／已判（待判清單另外能只看全新／重判） |",
+        "| `1` 沒有違規（記成 C）、`2` 有違規（A） | 判目前這件，並自動跳到下一件還沒判的 |",
+        "| `3` 重複報告（B）、`4` 看不出來（D） | 同上，次要情況 |",
+        "| `←` / `→` | 上一件／下一件；最後一件再按 `→` 到匯出頁 |",
+        "",
+        "頁面一次只顯示一件。系統為什麼報這件（腳深、車底帶、距離、接觸秒數）收在每件下方的「技術細節」裡。",
         "",
         f"判定即時存在瀏覽器（localStorage，key `{storage_key}`），關掉再開還在。"
         f"同一批換了 run 資料夾就會是新的 key，不會蓋掉舊的。",
@@ -570,7 +577,7 @@ def write_readme(manifest, payload, out_dir, run_dir):
     lines += [""] + legend_lines() + [""] + operation_lines(payload["storage_key"]) + [
         "## 匯出與算分",
         "",
-        f"頁面右上角的 **匯出 JSON** 會下載 `{payload['export_prefix']}-verdicts-<時間>.json`。"
+        f"判完最後一件會到匯出頁（隨時也能點頁面上方的「匯出」），按 **匯出 JSON** 會下載 `{payload['export_prefix']}-verdicts-<時間>.json`。"
         "每一列都帶著影片檔名、時間、車輛 id、行人 id、接觸區間與備註，所以判定結果對得回影片、對得回那一件。"
         "把檔案路徑丟給算分指令：",
         "",
@@ -642,12 +649,12 @@ def write_selection_readme(manifest, payload, out_dir, run_dir):
         "",
         "## 卡片上的兩批",
         "",
-        "- **全新事件**（黃框）：這一件以前沒有任何判定，判它就是在補一個新的判定。",
-        "- **舊判定對不上、需要重判**（橙框）：有一列舊判定是針對這支影片做的，但時間差超過 1.25 s 的容差、接不到任何事件；"
+        "- **全新事件**：這一件以前沒有任何判定，判它就是在補一個新的判定。",
+        "- **舊判定對不上、需要重判**（頁面上會寫出舊紀錄）：有一列舊判定是針對這支影片做的，但時間差超過 1.25 s 的容差、接不到任何事件；"
         "它指的車輛 id 跟這一件相同（或落在這一件附近），所以這一列印在卡片上，連同舊的時間與判定，"
         "由判的人決定它還成不成立。",
-        "- 卡片上另有「同一支影片附近的判定」：同一支影片在附近已經有一件判過了（含時間差、車輛、行人）。"
-        "如果這一件其實是同一件事被拆成兩件，選 **B**。",
+        "- 頁面上另有「附近已經判過一件」：同一支影片在附近已經有一件判過了（含時間差、車輛、行人）。"
+        "如果這一件其實是同一件事被拆成兩件，按「重複報告」（**B**）。",
         "",
     ] + legend_lines() + [""] + operation_lines(payload["storage_key"]) + [
         "## 判完能算到什麼",
@@ -679,7 +686,7 @@ def write_selection_readme(manifest, payload, out_dir, run_dir):
         "",
         "## 匯出與算分",
         "",
-        f"頁面右上角的 **匯出 JSON** 會下載 `{payload['export_prefix']}-verdicts-<時間>.json`。"
+        f"判完最後一件會到匯出頁（隨時也能點頁面上方的「匯出」），按 **匯出 JSON** 會下載 `{payload['export_prefix']}-verdicts-<時間>.json`。"
         "每一列都帶著影片檔名、時間、車輛 id、行人 id、接觸區間、屬於哪一批與備註。",
         "",
         "算分時把這份新判定跟**既有的判定檔一起**丟進去（舊檔還是要給，它涵蓋早先判過的 "
