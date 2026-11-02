@@ -226,6 +226,18 @@ class Scoring(unittest.TestCase):
         self.assertIsNone(totals["ap"])
         self.assertIn("no confidence score", totals["ap_reason"])
 
+    def test_a_label_with_no_single_vehicle_is_listed_as_unscorable_not_dropped(self):
+        two = {frame: [1, 2] for frame in (0, 10, 20, 30)}
+        score = e.score_clip(clip(on_frame=two))
+        self.assertEqual(score["labels_with_gt_box"], 0)
+        self.assertEqual([row["reason"] for row in score["labels_unscorable"]], ["several_vehicles_on_crosswalk"])
+        totals = e.summarise([score])
+        self.assertEqual(totals["labels"], 1)
+        self.assertEqual(len(totals["labels_unscorable"]), 1)          # the denominator shrank, and it says so
+        self.assertEqual(totals["labels_unscorable"][0]["stem"], "clip")
+        self.assertEqual(totals["labels_unscorable"][0]["vehicles_on_crosswalk"], [1, 2])
+        self.assertIsNone(totals["eiou_whole_pass"]["recall"])           # 0 of 0 scorable, not 0 of 1
+
     def test_a_scored_events_file_gets_an_ap(self):
         events = [{"kind": "vehicle_on_crosswalk_with_pedestrian", "time_s": 1.0, "vehicle_id": 1,
                    "contact_frames": [10, 20], "score": 0.9},

@@ -16,6 +16,12 @@ module reproduces them and changes nothing about the rule:
 - AP is `sklearn.metrics.average_precision_score` over per-event scores (`ap_cal.py`), reimplemented here so this
   module does not need scikit-learn, and with tied scores grouped like sklearn does.
 
+Two consequences of where the boxes come from. A label's box is the tracker's own box, not a hand-drawn one, so SIoU is
+1 for the same vehicle and 0 for another, and whole-pass EIoU is a 0/1 test (thresholds 0.3-0.7 give the same
+precision) rather than a continuous similarity: it cannot rank a near miss. And 5 of the 17 dev labels have no single
+vehicle behind them, so they are listed as unscorable and the EIoU denominator is 12, not 17 - a shrink that is printed,
+never silent.
+
 What this module does NOT do: invent a ground-truth box, a ground-truth interval, or a confidence score. A label with
 no single vehicle behind it gets no EIoU, and an events file with no `score` field gets no AP - both are reported as
 unavailable with the reason, never filled in with a default (Crosswalk's own `eiou.get(sample_name, 1.0)` default is
@@ -34,6 +40,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import eval_events as ev  # noqa: E402
 
 AP_UNAVAILABLE = "no confidence score: yield_image_rule reports a yes/no event, so AP@EIoU cannot be computed from it"
+
+NOTES = [
+    "GT boxes are the tracker's own boxes (raw_tracks.json), not hand-drawn: SIoU is 1 for the same vehicle and 0 for "
+    "another, so whole-pass EIoU is a 0/1 test, not a continuous similarity, and it cannot rank a near miss.",
+    "EIoU recall is over the labels that have a single vehicle behind them; labels that do not are listed as "
+    "unscorable and are not in that denominator.",
+]
 
 
 def tiou(det_start, det_end, label_start, label_end):
@@ -280,7 +293,7 @@ def score_clip(clip, threshold=0.5, tolerance=1.25, label_window_s=0.5):
     """Both instruments on one clip: EIoU at `threshold`, and the fixed time tolerance on the same labels."""
     truth = ground_truths(clip, int(round(label_window_s * clip["fps"])))
     resolved = [row for row in truth if row["gt"] is not None]
-    unresolved = [{"time_s": clip["labels"][row["label"]]["time_s"],
+    unscorable = [{"time_s": clip["labels"][row["label"]]["time_s"],
                    "source": clip["labels"][row["label"]].get("source"),
                    "reason": row["reason"],
                    "vehicles_on_crosswalk": clip["on_frame"].get(
@@ -312,7 +325,7 @@ def score_clip(clip, threshold=0.5, tolerance=1.25, label_window_s=0.5):
     return {
         "stem": clip["stem"], "fps": clip["fps"],
         "events": len(clip["events"]), "labels": len(clip["labels"]),
-        "labels_with_gt_box": len(resolved), "labels_unresolved": unresolved,
+        "labels_with_gt_box": len(resolved), "labels_unscorable": unscorable,
         "events_unusable_for_eiou": unusable,
         "eiou": {"threshold": threshold, "matched": len(eiou_pairs), "pairs": pair_detail(detections, eiou_pairs)},
         "eiou_whole_pass": {"threshold": threshold, "matched": len(whole_pass_pairs),
@@ -350,8 +363,10 @@ def summarise(clips, threshold=0.5, tolerance=1.25):
         ap, ap_reason = average_precision(scores, hits), None
     except ValueError as error:
         ap, ap_reason = None, str(error)
+    unscorable = [{"stem": clip["stem"], **row} for clip in clips for row in clip["labels_unscorable"]]
     return {
         **totals,
+        "labels_unscorable": unscorable,
         "eiou": {"threshold": threshold, "precision": rate(totals["eiou_matched"], totals["events"]),
                  "recall": rate(totals["eiou_matched"], totals["labels_with_gt_box"])},
         "eiou_whole_pass": {"threshold": threshold,
@@ -400,41 +415,50 @@ def main(argv=None):
             if row["basis"]:
                 bases[row["basis"]] += 1
         print(f"{entry['stem'][:20]:<22} events {score['events']:>3}  labels {score['labels']:>2}"
-              f"  with GT box {score['labels_with_gt_box']:>2}"
+              f"  scorable {score['labels_with_gt_box']:>2}"
               f"  EIoU {score['eiou']['matched']:>2}  whole-pass {score['eiou_whole_pass']['matched']:>2}"
               f"  {args.tolerance}s {score['tolerance']['matched_all_labels']:>2}"
               f"/{score['tolerance']['matched_resolved_labels']:>2}")
-        for row in score["labels_unresolved"]:
-            print(f"    unresolved label t={row['time_s']:>7.2f} {row['reason']}"
-                  f" (on-crosswalk vehicles {row['vehicles_on_crosswalk']})")
+        for row in score["labels_unscorable"]:
+            print(f"    UNSCORABLE label t={row['time_s']:>7.2f} {row['reason']}"
+                  f" (on-crosswalk vehicles {row['vehicles_on_crosswalk']}) - no EIoU")
 
     totals = summarise(clips, args.threshold, args.tolerance)
+    unscorable = len(totals["labels_unscorable"])
     print()
-    print(f"events {totals['events']}  labels {totals['labels']}  labels with a ground-truth box "
-          f"{totals['labels_with_gt_box']} (exact frame {bases['exact']}, within +-{args.label_window}s "
+    print(f"events {totals['events']}  labels {totals['labels']}  scorable for EIoU {totals['labels_with_gt_box']} of "
+          f"{totals['labels']} ({unscorable} unscorable; exact frame {bases['exact']}, within +-{args.label_window}s "
           f"{bases['window']})")
-    print(f"EIoU @ {args.threshold} (strict, contact):   precision {format_rate(totals['eiou']['precision'])} "
-          f"({totals['eiou_matched']}/{totals['events']})  recall {format_rate(totals['eiou']['recall'])} "
-          f"({totals['eiou_matched']}/{totals['labels_with_gt_box']})")
-    print(f"EIoU @ {args.threshold} (strict, whole pass): precision "
+    print(f"EIoU @ {args.threshold} (strict, whole pass; primary row): precision "
           f"{format_rate(totals['eiou_whole_pass']['precision'])} ({totals['whole_pass_matched']}/{totals['events']})"
           f"  recall {format_rate(totals['eiou_whole_pass']['recall'])} "
-          f"({totals['whole_pass_matched']}/{totals['labels_with_gt_box']})")
-    print(f"{args.tolerance}s (all labels):     precision "
+          f"({totals['whole_pass_matched']}/{totals['labels_with_gt_box']} scorable)")
+    print(f"EIoU @ {args.threshold} (strict, contact; definition comparison, not comparable to whole pass): precision "
+          f"{format_rate(totals['eiou']['precision'])} ({totals['eiou_matched']}/{totals['events']})"
+          f"  recall {format_rate(totals['eiou']['recall'])} "
+          f"({totals['eiou_matched']}/{totals['labels_with_gt_box']} scorable)")
+    print(f"{args.tolerance}s (all {totals['labels']} labels):     precision "
           f"{format_rate(totals['tolerance']['precision_all_labels'])} "
           f"({totals['tolerance_matched_all_labels']}/{totals['events']})  recall "
           f"{format_rate(totals['tolerance']['recall_all_labels'])} "
           f"({totals['tolerance_matched_all_labels']}/{totals['labels']})")
-    print(f"{args.tolerance}s (same {totals['labels_with_gt_box']} labels): precision "
+    print(f"{args.tolerance}s (same {totals['labels_with_gt_box']} scorable labels): precision "
           f"{format_rate(totals['tolerance']['precision_resolved_labels'])} "
           f"({totals['tolerance_matched_resolved_labels']}/{totals['events']})  recall "
           f"{format_rate(totals['tolerance']['recall_resolved_labels'])} "
           f"({totals['tolerance_matched_resolved_labels']}/{totals['labels_with_gt_box']})")
     print(f"AP @ EIoU {args.threshold}: " + (format_rate(totals["ap"]) if totals["ap"] is not None
                                             else f"not computable - {totals['ap_reason']}"))
+    for note in NOTES:
+        print(f"note: {note}")
+    print(f"labels with no single vehicle behind them, excluded from every EIoU denominator ({unscorable} of "
+          f"{totals['labels']}):")
+    for row in totals["labels_unscorable"]:
+        print(f"  {row['stem'][:22]:<24} t={row['time_s']:>7.2f}  {row['reason']}"
+              f"  on-crosswalk vehicles {row['vehicles_on_crosswalk']}  [{row['source']}]")
     report = {"run": str(run_dir), "labels": str(labels_dir), "in_sample": manifest.get("role") == "dev",
               "threshold": args.threshold, "tolerance_s": args.tolerance, "label_window_s": args.label_window,
-              "pass_gap_s": args.pass_gap,
+              "pass_gap_s": args.pass_gap, "notes": NOTES,
               "totals": totals, "clips": clips}
     if args.json:
         Path(args.json).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
