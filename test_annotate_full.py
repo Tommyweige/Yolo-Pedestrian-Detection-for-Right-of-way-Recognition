@@ -24,12 +24,14 @@ def test_only_done_clips_are_exported_and_the_scorer_reads_them(tmp_path):
     result = {row["stem"]: row for row in store.export(clips)}
 
     assert result["done"]["exported"] and not result["open"]["exported"]
-    assert not (tmp_path / "labels" / "open.jsonl").exists()
-    rows = ev.load(tmp_path / "labels" / "done.jsonl")
+    assert not (tmp_path / "open.jsonl").exists()
+    rows = ev.load(tmp_path / "done.jsonl")
     assert [row["frame"] for row in rows] == [120, 300]
     assert [row["time_s"] for row in rows] == [round(120 / 59.94, 3), round(300 / 59.94, 3)]   # 2.002, 5.005
     assert all(row["kind"] == "suspected_failure_to_yield" and row["source"] == "manual" for row in rows)
     assert rows[1]["vehicle_id"] == 7 and "vehicle_id" not in rows[0]
+    assert ev.label_set(tmp_path) == "complete"            # the scorer can tell these from the old when-seen labels
+    assert ev.label_set(tmp_path / "work") == "when_seen"
 
 
 def test_unmarking_a_clip_removes_its_export(tmp_path):
@@ -37,7 +39,7 @@ def test_unmarking_a_clip_removes_its_export(tmp_path):
     clips = {"c": clip("c", 25.0)}
     store.put("c", {"done": True, "marks": [{"frame": 50}]})
     store.export(clips)
-    assert (tmp_path / "labels" / "c.jsonl").exists()
+    assert (tmp_path / "c.jsonl").exists()
     store.put("c", {"done": False, "marks": [{"frame": 50}]})
     store.export(clips)
-    assert not (tmp_path / "labels" / "c.jsonl").exists()   # an unfinished clip must not be scored
+    assert not (tmp_path / "c.jsonl").exists()   # an unfinished clip must not be scored

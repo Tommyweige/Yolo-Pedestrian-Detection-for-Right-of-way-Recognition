@@ -11,13 +11,18 @@ which pedestrians are on or at it at that frame (same geometry as yield_image_ru
 identify the car.
 
 Work state:   <out>/work/<stem>.json   (marks + done flag, saved on every change)
-Export:       <out>/labels/<stem>.jsonl (done clips only; the format scripts/eval_events.load reads)
+Export:       <out>/<stem>.jsonl        (done clips only; the format scripts/eval_events.load reads)
+Manifest:     <out>/label_set.json      (label_set "complete" + the done clips; eval_rule_events prints which set it
+                                         scored, so a score from these labels is never confused with the old ones)
+
+<out> is the labels folder itself: pass it to eval_rule_events.py --labels. Keep it apart from the old "when seen"
+labels; the two sets are compared, not merged.
 
 Frame convention: a mark at video frame index k (0-based) is stored as frame k+1 and time_s (k+1)/fps, the same
 one-based frame and time the tracks and the rule use, so the label-vs-event residual has no built-in one-frame shift.
 
 Usage:
-  python scripts/annotate_full.py --run E:\\...\\dev-run --out E:\\Learning\\yolo-ped-analysis\\full-labels [--port 8765]
+  python scripts/annotate_full.py --run E:\\...\\dev-run --out E:\\Learning\\yolo-ped-analysis\\labels-complete [--port 8765]
 """
 import argparse
 import json
@@ -38,6 +43,7 @@ import yield_image_rule as r  # noqa: E402
 
 PAGE = Path(__file__).with_name("annotate_full.html")
 KIND = "suspected_failure_to_yield"
+LABEL_SET = "complete"
 REQUIRED = ("frame", "kind", "source", "time_s", "video")
 KIND_ZH = {"car": "汽車", "motorcycle": "機車", "bus": "公車", "truck": "貨車", "bicycle": "腳踏車"}
 
@@ -170,7 +176,7 @@ def check_export(path, rows):
 class Store:
     def __init__(self, out):
         self.work_dir = out / "work"
-        self.labels_dir = out / "labels"
+        self.labels_dir = out
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.labels_dir.mkdir(parents=True, exist_ok=True)
 
@@ -204,6 +210,11 @@ class Store:
             path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
             check_export(path, rows)
             result.append({"stem": clip.stem, "done": True, "exported": True, "rows": len(rows), "path": str(path)})
+        manifest = {"label_set": LABEL_SET, "meaning": "每支影片從頭看到尾標完；只列出已按「這支標完了」的影片",
+                    "clips": [row["stem"] for row in result if row["exported"]],
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        (self.labels_dir / ev.LABEL_SET_FILE).write_text(json.dumps(manifest, ensure_ascii=False, indent=1),
+                                                         encoding="utf-8")
         return result
 
 
@@ -309,7 +320,7 @@ def load_clips(run_dir):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run", required=True, help="newclip run folder with run.json (videos, masks, tracks, events)")
-    parser.add_argument("--out", required=True, help="work/ and labels/ are kept here")
+    parser.add_argument("--out", required=True, help="labels folder: <stem>.jsonl and label_set.json here, work state in work/")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)

@@ -19,6 +19,18 @@ import sys
 from pathlib import Path
 
 ALIASES = {"vehicle_on_crosswalk_with_pedestrian": "suspected_failure_to_yield"}
+LABEL_SET_FILE = "label_set.json"
+LABEL_SETS = {"complete": "整支看完（完整標註，主數字）",
+              "when_seen": "看到才記（舊標註，只能對照，precision 不可信）"}
+
+
+def label_set(labels_dir):
+    """Which set of labels a folder is: 'complete' when scripts/annotate_full.py wrote its label_set.json, else
+    'when_seen' (the original labels/, written whenever an incident happened to be noticed)."""
+    path = Path(labels_dir) / LABEL_SET_FILE
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8")).get("label_set", "when_seen")
+    return "when_seen"
 
 
 def load(path):

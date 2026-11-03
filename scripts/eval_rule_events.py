@@ -231,7 +231,9 @@ def main(argv=None):
         basis = {"method": "given_on_command_line", "from_labels": "manual", "overridden": True,
                  "sorted_abs_residuals": sorted(every)}
 
-    report = {"in_sample": True, "tolerance": {"value_s": tolerance, **basis},
+    labels_set = ev.label_set(labels_dir)
+    report = {"in_sample": True, "label_set": {"name": labels_set, "dir": str(labels_dir), "clips": len(clips)},
+              "tolerance": {"value_s": tolerance, **basis},
               "params": {**r.Params().__dict__, **overrides}, "clips": [], "sensitivity": []}
     for clip in clips:
         result = score_clip(clip["events"], clip["labels"], tolerance, clip["groups"], clip["riders"])
@@ -243,6 +245,7 @@ def main(argv=None):
 
     totals = report["totals"]
     manual, confirmed = totals["by_source"]["manual"], totals["by_source"]["confirmed_candidate"]
+    print(f"labels: {labels_set} = {ev.LABEL_SETS.get(labels_set, labels_set)}; {len(clips)} clips from {labels_dir}")
     print(f"tolerance {tolerance}s ({basis['method']}, abs residuals {basis['sorted_abs_residuals']})")
     print(f"{'clip':<18}{'events':>7}{'manual':>9}{'confirmed':>11}{'incid':>8}{'redun':>7}{'FA':>4}")
     for clip in report["clips"]:
@@ -256,7 +259,7 @@ def main(argv=None):
           f"{totals['duplicate_reports']:>7}")
     print(f"precision {totals['precision']:.3f}, incident recall {totals['incident_recall']:.3f}, "
           f"redundant reports {totals['duplicate_reports']} ({totals['duplicates']} duplicate pairs), "
-          f"in-sample on {len(clips)} clips")
+          f"in-sample on {len(clips)} clips, labels: {labels_set}")
     for row in report["sensitivity"]:
         print(f"  tol {row['tolerance_s']:>4}s  manual {row['by_source']['manual']['hit']}/{row['by_source']['manual']['labelled']}"
               f"  confirmed {row['by_source']['confirmed_candidate']['hit']}/{row['by_source']['confirmed_candidate']['labelled']}"

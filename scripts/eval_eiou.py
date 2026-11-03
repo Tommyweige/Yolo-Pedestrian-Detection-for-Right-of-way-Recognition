@@ -402,10 +402,15 @@ def main(argv=None):
 
     run_dir, labels_dir = Path(args.run), Path(args.labels)
     manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    clips, bases = [], {"exact": 0, "window": 0}
+    labels_set = ev.label_set(labels_dir)
+    print(f"labels: {labels_set} = {ev.LABEL_SETS.get(labels_set, labels_set)} ({labels_dir})")
+    clips, bases, unfinished = [], {"exact": 0, "window": 0}, []
     for entry in manifest["clips"]:
         labels_path = labels_dir / (entry["stem"] + ".jsonl")
         if not labels_path.exists():
+            if labels_set == "complete":   # not marked done in annotate_full: excluded, never scored as empty
+                unfinished.append(entry["stem"])
+                continue
             print(f"no labels for {entry['stem']}: {labels_path}", file=sys.stderr)
             return 2
         clip = load_clip(entry, labels_path, args.pass_gap)
@@ -423,9 +428,14 @@ def main(argv=None):
             print(f"    UNSCORABLE label t={row['time_s']:>7.2f} {row['reason']}"
                   f" (on-crosswalk vehicles {row['vehicles_on_crosswalk']}) - no EIoU")
 
+    if not clips:
+        print("no clip is finished in this labels folder; nothing to score", file=sys.stderr)
+        return 2
     totals = summarise(clips, args.threshold, args.tolerance)
     unscorable = len(totals["labels_unscorable"])
     print()
+    print(f"labels: {labels_set}; scored {len(clips)} of {len(manifest['clips'])} clips"
+          + (f"; not finished, excluded: {', '.join(s[:20] for s in unfinished)}" if unfinished else ""))
     print(f"events {totals['events']}  labels {totals['labels']}  scorable for EIoU {totals['labels_with_gt_box']} of "
           f"{totals['labels']} ({unscorable} unscorable; exact frame {bases['exact']}, within +-{args.label_window}s "
           f"{bases['window']})")
@@ -456,7 +466,9 @@ def main(argv=None):
     for row in totals["labels_unscorable"]:
         print(f"  {row['stem'][:22]:<24} t={row['time_s']:>7.2f}  {row['reason']}"
               f"  on-crosswalk vehicles {row['vehicles_on_crosswalk']}  [{row['source']}]")
-    report = {"run": str(run_dir), "labels": str(labels_dir), "in_sample": manifest.get("role") == "dev",
+    report = {"run": str(run_dir), "labels": str(labels_dir),
+              "label_set": {"name": labels_set, "scored_clips": len(clips), "unfinished_clips": unfinished},
+              "in_sample": manifest.get("role") == "dev",
               "threshold": args.threshold, "tolerance_s": args.tolerance, "label_window_s": args.label_window,
               "pass_gap_s": args.pass_gap, "notes": NOTES,
               "totals": totals, "clips": clips}
