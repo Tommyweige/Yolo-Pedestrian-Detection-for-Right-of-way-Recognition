@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>整支影片標註</title>
+<style>
+  :root { --bg:#111418; --panel:#1b2026; --line:#2c333b; --text:#e8ecf0; --dim:#8b96a3; --red:#ff4d4f; --amber:#f5a623; --green:#3ccf7a; --blue:#4da3ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 "Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif; display:grid; grid-template-columns:220px 1fr 300px; height:100vh; overflow:hidden; }
+  aside, section { padding:12px; overflow:auto; }
+  aside#clips { border-right:1px solid var(--line); background:var(--panel); }
+  aside#side { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; gap:10px; }
+  h2 { font-size:13px; color:var(--dim); margin:0 0 8px; font-weight:normal; letter-spacing:.05em; }
+  .clip { padding:8px; border-radius:6px; cursor:pointer; margin-bottom:4px; border:1px solid transparent; }
+  .clip:hover { background:#232a32; }
+  .clip.active { border-color:var(--blue); background:#1f2a36; }
+  .clip .name { font-size:13px; word-break:break-all; }
+  .clip .st { font-size:12px; margin-top:2px; }
+  .done { color:var(--green); } .todo { color:var(--amber); }
+  #main { display:flex; flex-direction:column; gap:8px; min-width:0; }
+  #stage { position:relative; background:#000; flex:1; min-height:0; border-radius:6px; overflow:hidden; }
+  video, #overlay { position:absolute; inset:0; width:100%; height:100%; }
+  video { object-fit:contain; }
+  #flash { position:absolute; inset:0; border:6px solid var(--red); opacity:0; pointer-events:none; transition:opacity .4s; }
+  #status { display:flex; align-items:baseline; gap:18px; flex-wrap:wrap; }
+  #time { font-size:30px; font-variant-numeric:tabular-nums; font-weight:bold; }
+  #speed { color:var(--dim); }
+  #who { font-size:17px; }
+  #who .veh { color:var(--amber); font-weight:bold; } #who .ped { color:var(--blue); font-weight:bold; }
+  #who .none { color:var(--dim); }
+  #near { color:var(--dim); font-size:14px; }
+  #timeline { width:100%; height:64px; cursor:pointer; display:block; background:var(--panel); border-radius:6px; }
+  #keys { color:var(--dim); font-size:13px; display:flex; flex-wrap:wrap; gap:4px 14px; }
+  kbd { background:#2a323b; border:1px solid #3a444f; border-bottom-width:2px; border-radius:4px; padding:0 5px; font:12px Consolas,monospace; color:var(--text); }
+  #marks { flex:1; overflow:auto; }
+  .mark { display:flex; gap:8px; align-items:center; padding:7px 8px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
+  .mark:hover { background:#232a32; }
+  .mark.sel { border-color:var(--red); background:#2d1d1f; }
+  .mark .t { font-variant-numeric:tabular-nums; font-weight:bold; width:64px; }
+  .mark .v { flex:1; }
+  .mark .x { color:var(--dim); font-size:12px; }
+  .empty { color:var(--dim); font-size:14px; padding:8px; }
+  button { font:inherit; border-radius:6px; border:1px solid var(--line); background:#26303a; color:var(--text); padding:9px 10px; cursor:pointer; }
+  button:hover { background:#2f3b47; }
+  #doneBtn { background:#1d3a2a; border-color:#2f6b47; font-size:16px; font-weight:bold; }
+  #doneBtn.isdone { background:#26303a; border-color:var(--line); font-weight:normal; font-size:14px; }
+  #banner { padding:8px 10px; border-radius:6px; font-size:14px; }
+  #banner.done { background:#173524; color:var(--green); } #banner.todo { background:#3a2c12; color:var(--amber); }
+  #toast { position:fixed; left:50%; top:16px; transform:translateX(-50%); background:#2d1d1f; border:1px solid var(--red); padding:8px 16px; border-radius:6px; opacity:0; transition:opacity .3s; pointer-events:none; font-size:16px; z-index:9; }
+  #exportOut { font-size:12px; color:var(--dim); white-space:pre-wrap; word-break:break-all; }
+</style>
+</head>
+<body>
+<aside id="clips"><h2>影片（✓ = 已標完，才會算分）</h2><div id="clipList"></div></aside>
+<section id="main">
+  <div id="stage"><video id="video" preload="auto" muted></video><canvas id="overlay"></canvas><div id="flash"></div></div>
+  <div id="status"><span id="time">0:00.0</span><span id="speed">1×</span><span id="who"></span><span id="near"></span></div>
+  <canvas id="timeline"></canvas>
+  <div id="keys">
+    <span><kbd>空白</kbd> 播放/暫停</span>
+    <span><kbd>Enter</kbd> 記一筆違規</span>
+    <span><kbd>←</kbd><kbd>→</kbd> ±1 秒</span>
+    <span><kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> ±5 秒</span>
+    <span><kbd>,</kbd><kbd>.</kbd> 逐格</span>
+    <span><kbd>[</kbd><kbd>]</kbd> 上/下一個系統事件</span>
+    <span><kbd>↑</kbd><kbd>↓</kbd> 選上/下一筆記錄</span>
+    <span><kbd>1</kbd>–<kbd>9</kbd> 換成那台車</span>
+    <span><kbd>T</kbd> 把選中的記錄移到現在</span>
+    <span><kbd>Del</kbd> 刪除選中的記錄</span>
+    <span><kbd>-</kbd><kbd>=</kbd> 慢放/快放</span>
+  </div>
+</section>
+<aside id="side">
+  <div id="banner"></div>
+  <h2>我的記錄（這支影片）</h2>
+  <div id="marks"></div>
+  <button id="doneBtn"></button>
+  <button id="exportBtn">匯出已標完的影片</button>
+  <div id="exportOut"></div>
+</aside>
+<div id="toast"></div>
+<script>
+const $ = id => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), timeline = $("timeline");
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2];
+let clips = [], clip = null, work = null, sel = -1, scene = null, speedIdx = 3, sceneBusy = false, sceneWant = null;
+
+const fmt = s => { s = Math.max(0, s); const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`; };
+const frameNow = () => Math.min(clip.frames, Math.floor(video.currentTime * clip.fps + 1e-3) + 1);   // one-based, as the tracks
+const timeOfFrame = f => (f - 1 + 0.5) / clip.fps;                                                      // middle of that frame
+const markTime = m => m.frame / clip.fps;                                                               // the exported time_s
+const vehLabel = v => v ? `${v.kind_zh}` : "沒認到車";
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) });
+  return res.json();
+}
+
+function toast(text) { const t = $("toast"); t.textContent = text; t.style.opacity = 1; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.opacity = 0, 1400); }
+function flash() { const f = $("flash"); f.style.transition = "none"; f.style.opacity = 1; requestAnimationFrame(() => { f.style.transition = "opacity .5s"; f.style.opacity = 0; }); }
+
+async function loadClips() {
+  clips = await api("/api/clips");
+  $("clipList").innerHTML = clips.map(c => `
+    <div class="clip ${clip && c.stem === clip.stem ? "active" : ""}" data-stem="${encodeURIComponent(c.stem)}">
+      <div class="name">${c.stem}</div>
+      <div class="st ${c.done ? "done" : "todo"}">${c.done ? "✓ 已標完" : "未完成"} · ${c.marks} 筆 · ${fmt(c.duration)}</div>
+    </div>`).join("");
+  document.querySelectorAll(".clip").forEach(el => el.onclick = () => openClip(decodeURIComponent(el.dataset.stem)));
+}
+
+async function openClip(stem) {
+  const data = await api(`/api/clip?stem=${encodeURIComponent(stem)}`);
+  clip = data; work = data.work; sel = -1; scene = null;
+  video.src = `/video?stem=${encodeURIComponent(stem)}`;
+  video.playbackRate = SPEEDS[speedIdx];
+  location.hash = encodeURIComponent(stem);
+  await loadClips(); render();
+}
+
+async function save() {
+  work = await api(`/api/work?stem=${encodeURIComponent(clip.stem)}`, work);
+  if (work.done) await doExport(true);
+  loadClips(); render();
+}
+
+function sortMarks() {
+  const keep = work.marks[sel];
+  work.marks.sort((a, b) => a.frame - b.frame);
+  sel = keep ? work.marks.indexOf(keep) : -1;
+}
+
+async function sceneAt(frame, near) { return api(`/api/scene?stem=${encodeURIComponent(clip.stem)}&frame=${frame}${near ? "&near=1" : ""}`); }
+
+async function addMark() {
+  const frame = frameNow();
+  const s = await sceneAt(frame, true);
+  const mark = { frame, view_frame: s.vehicle_frame || frame, vehicle: s.vehicles[0] ? { id: s.vehicles[0].id, kind: s.vehicles[0].kind, kind_zh: s.vehicles[0].kind_zh } : null,
+                 candidates: s.vehicles.map(v => ({ id: v.id, kind: v.kind, kind_zh: v.kind_zh })),
+                 pedestrians: s.pedestrians.filter(p => p.state === "on_crosswalk").map(p => p.id) };
+  work.marks.push(mark); sel = work.marks.length - 1; sortMarks();
+  flash(); toast(`已記 ${fmt(markTime(mark))} · ${vehLabel(mark.vehicle)}${mark.candidates.length > 1 ? `（按 1–${Math.min(9, mark.candidates.length)} 可換車）` : ""}`);
+  await save();
+}
+
+async function retime() {
+  if (sel < 0) return toast("先用 ↑↓ 選一筆記錄");
+  const m = work.marks[sel], frame = frameNow(), s = await sceneAt(frame, true);
+  m.frame = frame; m.view_frame = s.vehicle_frame || frame;
+  m.candidates = s.vehicles.map(v => ({ id: v.id, kind: v.kind, kind_zh: v.kind_zh }));
+  if (!m.vehicle || !m.candidates.some(c => c.id === m.vehicle.id)) m.vehicle = m.candidates[0] || null;
+  m.pedestrians = s.pedestrians.filter(p => p.state === "on_crosswalk").map(p => p.id);
+  sortMarks(); toast(`改到 ${fmt(markTime(m))}`); await save();
+}
+
+async function pickVehicle(n) {
+  if (sel < 0) return toast("先用 ↑↓ 選一筆記錄");
+  const m = work.marks[sel];
+  if (!m.candidates || !m.candidates[n - 1]) return toast(`那一刻斑馬線上沒有車 ${n}`);
+  m.vehicle = m.candidates[n - 1]; toast(`改成 車${n} ${m.vehicle.kind_zh}`); await save();
+}
+
+async function del() {
+  if (sel < 0) return toast("先用 ↑↓ 選一筆記錄");
+  const m = work.marks.splice(sel, 1)[0];
+  sel = Math.min(sel, work.marks.length - 1);
+  toast(`刪掉 ${fmt(markTime(m))}`); await save();
+}
+
+function select(i) {
+  if (!work.marks.length) return;
+  sel = Math.max(0, Math.min(work.marks.length - 1, i));
+  // show the frame the vehicles were read on, so 車1/車2 on screen are the ones the number keys pick
+  const m = work.marks[sel];
+  video.pause(); video.currentTime = timeOfFrame(m.view_frame || m.frame); render();
+}
+
+async function toggleDone() {
+  if (!work.done && !confirm(`確定整支影片都看完了？\n共 ${work.marks.length} 筆違規。標完才會算分。`)) return;
+  work.done = !work.done; await save();
+  if (!work.done) await doExport(true);
+  toast(work.done ? "這支標完了 ✓" : "已改回未完成（不會算分）");
+}
+
+async function doExport(quiet) {
+  const res = await api("/api/export", {});
+  if (res.error) { $("exportOut").textContent = "匯出失敗：" + res.error; return; }
+  const done = res.clips.filter(c => c.exported);
+  $("exportOut").textContent = `已匯出 ${done.length} 支到\n${res.labels_dir}\n` + done.map(c => `· ${c.stem}：${c.rows} 筆`).join("\n");
+  if (!quiet) toast(`已匯出 ${done.length} 支已標完的影片`);
+}
+
+function seek(dt) { video.currentTime = Math.max(0, Math.min(video.duration || 1e9, video.currentTime + dt)); }
+function step(n) { video.pause(); const f = Math.max(1, Math.min(clip.frames, frameNow() + n)); video.currentTime = timeOfFrame(f); }
+function jumpEvent(dir) {
+  const t = video.currentTime, ev = clip.events.map(e => e.frame / clip.fps);
+  const target = dir > 0 ? ev.find(x => x > t + 0.05) : [...ev].reverse().find(x => x < t - 0.3);
+  if (target === undefined) return toast(dir > 0 ? "後面沒有系統事件了" : "前面沒有系統事件了");
+  video.pause(); video.currentTime = Math.max(0, target - 1.0);   // a second early, so the approach is visible
+  toast(`系統事件 ${fmt(target)}（往前留 1 秒）`);
+}
+
+document.addEventListener("keydown", e => {
+  if (!clip || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key;
+  const handled = () => e.preventDefault();
+  if (k === " ") { handled(); video.paused ? video.play() : video.pause(); }
+  else if (k === "Enter") { handled(); addMark(); }
+  else if (k === "ArrowLeft") { handled(); seek(e.shiftKey ? -5 : -1); }
+  else if (k === "ArrowRight") { handled(); seek(e.shiftKey ? 5 : 1); }
+  else if (k === "," || k === "<") { handled(); step(-1); }
+  else if (k === "." || k === ">") { handled(); step(1); }
+  else if (k === "[") { handled(); jumpEvent(-1); }
+  else if (k === "]") { handled(); jumpEvent(1); }
+  else if (k === "ArrowUp") { handled(); select(sel < 0 ? work.marks.length - 1 : sel - 1); }
+  else if (k === "ArrowDown") { handled(); select(sel + 1); }
+  else if (k === "Delete" || k === "Backspace") { handled(); del(); }
+  else if (k === "t" || k === "T") { handled(); retime(); }
+  else if (/^[1-9]$/.test(k)) { handled(); pickVehicle(+k); }
+  else if (k === "-" || k === "=" || k === "+") {
+    handled(); speedIdx = Math.max(0, Math.min(SPEEDS.length - 1, speedIdx + (k === "-" ? -1 : 1)));
+    video.playbackRate = SPEEDS[speedIdx]; render();
+  }
+  else if (k === "Home") { handled(); video.currentTime = 0; }
+});
+
+document.querySelectorAll("button").forEach(b => b.addEventListener("click", () => b.blur()));   // keys keep driving the player
+$("doneBtn").onclick = toggleDone;
+$("exportBtn").onclick = () => doExport(false);
+timeline.addEventListener("mousedown", e => {
+  const r = timeline.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, dur = clip.frames / clip.fps;
+  // a click near a system event or a mark snaps to it
+  const px = 8 / r.width;
+  const hitMark = work.marks.findIndex(m => Math.abs(markTime(m) / dur - x) < px);
+  if (hitMark >= 0 && (e.clientY - r.top) > r.height / 2) return select(hitMark);
+  const hitEv = clip.events.find(ev => Math.abs(ev.frame / clip.fps / dur - x) < px);
+  video.currentTime = hitEv ? Math.max(0, hitEv.frame / clip.fps - 1.0) : x * dur;
+});
+
+// The scene (who is on the crosswalk) follows the playhead; requests are chained so they never pile up.
+async function refreshScene() {
+  if (!clip || sceneBusy) return;
+  const f = frameNow();
+  if (scene && scene.frame === f) return;
+  sceneBusy = true;
+  try { scene = await sceneAt(f); } finally { sceneBusy = false; }
+  render();
+}
+
+function drawOverlay() {
+  const w = overlay.clientWidth, h = overlay.clientHeight;
+  if (overlay.width !== w) overlay.width = w;
+  if (overlay.height !== h) overlay.height = h;
+  const g = overlay.getContext("2d"); g.clearRect(0, 0, w, h);
+  if (!clip || !scene || Math.abs(scene.frame - frameNow()) > 6) return;
+  const [sw, sh] = clip.size, s = Math.min(w / sw, h / sh), ox = (w - sw * s) / 2, oy = (h - sh * s) / 2;
+  const box = (b, color, label, width) => {
+    g.strokeStyle = color; g.lineWidth = width; g.strokeRect(ox + b[0] * s, oy + b[1] * s, (b[2] - b[0]) * s, (b[3] - b[1]) * s);
+    g.font = "bold 18px 'Microsoft JhengHei',sans-serif"; const tw = g.measureText(label).width + 10;
+    g.fillStyle = color; g.fillRect(ox + b[0] * s, oy + b[1] * s - 24, tw, 24);
+    g.fillStyle = "#000"; g.fillText(label, ox + b[0] * s + 5, oy + b[1] * s - 6);
+  };
+  const m = sel >= 0 ? work.marks[sel] : null, pinned = m && m.vehicle && Math.abs(m.frame - scene.frame) <= clip.fps / 2 ? m.vehicle.id : null;
+  scene.pedestrians.forEach(p => box(p.box, p.state === "on_crosswalk" ? "#4da3ff" : "#4da3ff88", p.state === "on_crosswalk" ? "行人" : "路邊", 2));
+  scene.vehicles.forEach((v, i) => box(v.box, v.id === pinned ? "#ff4d4f" : "#f5a623", `車${i + 1} ${v.kind_zh}`, v.id === pinned ? 5 : 3));
+}
+
+function drawTimeline() {
+  const w = timeline.clientWidth, h = timeline.clientHeight;
+  if (timeline.width !== w) timeline.width = w;
+  if (timeline.height !== h) timeline.height = h;
+  const g = timeline.getContext("2d"); g.clearRect(0, 0, w, h);
+  if (!clip) return;
+  const dur = clip.frames / clip.fps, X = t => t / dur * w, mid = h / 2;
+  g.fillStyle = "#8b96a3"; g.font = "11px sans-serif";
+  for (let t = 0; t <= dur; t += 5) { g.fillRect(X(t), mid - 1, 1, 3); if (t % 10 === 0) g.fillText(`${t}s`, X(t) + 2, mid + 12); }
+  g.fillStyle = "#2c333b"; g.fillRect(0, mid, w, 1);
+  g.fillStyle = "#8b96a3"; g.fillText("系統", 4, 12); g.fillText("我", 4, h - 4);
+  clip.events.forEach(ev => { const x = X(ev.frame / clip.fps); g.fillStyle = "#f5a623"; g.beginPath(); g.moveTo(x - 6, 4); g.lineTo(x + 6, 4); g.lineTo(x, 16); g.fill(); g.fillRect(x - 1, 16, 2, mid - 16); });
+  work.marks.forEach((m, i) => { const x = X(markTime(m)); g.fillStyle = i === sel ? "#fff" : "#ff4d4f"; g.fillRect(x - 3, mid + 4, 6, h - mid - 8); });
+  const px = X(video.currentTime); g.fillStyle = "#4da3ff"; g.fillRect(px - 1, 0, 3, h);
+}
+
+function render() {
+  if (!clip) return;
+  $("time").textContent = `${fmt(video.currentTime)} / ${fmt(clip.frames / clip.fps)}`;
+  $("speed").textContent = `${SPEEDS[speedIdx]}×${video.paused ? " · 暫停" : ""}`;
+  if (scene && Math.abs(scene.frame - frameNow()) <= 6) {
+    const v = scene.vehicles, p = scene.pedestrians.filter(x => x.state === "on_crosswalk");
+    $("who").innerHTML = v.length || p.length
+      ? `斑馬線上：${v.length ? v.map((x, i) => `<span class="veh">車${i + 1} ${x.kind_zh}</span>`).join("、") : '<span class="none">沒有車</span>'}
+         ｜ ${p.length ? `<span class="ped">${p.length} 位行人</span>` : '<span class="none">沒有行人</span>'}`
+      : '<span class="none">斑馬線上沒有車也沒有行人</span>';
+  }
+  const near = clip.events.filter(e => Math.abs(e.frame / clip.fps - video.currentTime) <= 1.25);
+  $("near").textContent = near.length ? `系統在 ${near.map(e => fmt(e.frame / clip.fps)).join("、")} 報了一件` : "";
+  $("banner").className = work.done ? "done" : "todo";
+  $("banner").textContent = work.done ? `✓ 這支標完了，共 ${work.marks.length} 筆，會算分` : "還沒標完：從頭看到尾，看到違規就按 Enter";
+  $("doneBtn").textContent = work.done ? "改回未完成" : "✓ 這支標完了";
+  $("doneBtn").className = work.done ? "isdone" : "";
+  $("marks").innerHTML = work.marks.length ? work.marks.map((m, i) => `
+    <div class="mark ${i === sel ? "sel" : ""}" data-i="${i}">
+      <span class="t">${fmt(markTime(m))}</span>
+      <span class="v">${vehLabel(m.vehicle)}${m.pedestrians && m.pedestrians.length ? ` · ${m.pedestrians.length} 位行人` : ""}</span>
+      <span class="x">${m.candidates && m.candidates.length > 1 ? `${m.candidates.length} 台可選` : ""}</span>
+    </div>`).join("") : '<div class="empty">還沒有記錄。看到車沒讓行人就按 Enter。<br>整支沒有違規也要按「這支標完了」。</div>';
+  document.querySelectorAll(".mark").forEach(el => el.onclick = () => select(+el.dataset.i));
+  const selEl = document.querySelector(".mark.sel"); if (selEl) selEl.scrollIntoView({ block: "nearest" });
+  drawOverlay(); drawTimeline();
+}
+
+function tick() { if (clip) { refreshScene(); drawOverlay(); drawTimeline(); $("time").textContent = `${fmt(video.currentTime)} / ${fmt(clip.frames / clip.fps)}`; } requestAnimationFrame(tick); }
+video.addEventListener("play", render); video.addEventListener("pause", render); video.addEventListener("seeked", render);
+window.addEventListener("resize", render);
+
+loadClips().then(() => openClip(location.hash ? decodeURIComponent(location.hash.slice(1)) : (clips.find(c => !c.done) || clips[0]).stem)).then(() => requestAnimationFrame(tick));
+</script>
+</body>
+</html>
