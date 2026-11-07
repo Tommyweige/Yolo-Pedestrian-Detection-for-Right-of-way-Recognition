@@ -21,34 +21,41 @@ $log = "datasets\$Run.log"
 Start-Transcript -Path $log -Append | Out-Null
 $videos = Get-ChildItem $Folder -File | Where-Object { $_.Extension -in ".mp4", ".avi", ".mkv", ".mov" } | Where-Object { $name = $_.Name; ($Only.Count -eq 0) -or (@($Only | Where-Object { $name -like "*$_*" }).Count -gt 0) } | Sort-Object Name
 $n = 0
-$waiting = if ($Mode -eq "review") { @("--include-waiting") } else { @() }
+# @(...) 讓單一元素仍是陣列;PowerShell 5.1 會把 if 區塊的單一元素陣列拆成字串
+$waiting = @(if ($Mode -eq "review") { "--include-waiting" })
+function Invoke-Step([string]$Label, [scriptblock]$Body) {
+    "  $Label"
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    & $Body
+    if ($LASTEXITCODE -ne 0) {
+        "失敗:$Label(結束碼 $LASTEXITCODE)"
+        Stop-Transcript | Out-Null
+        exit 1
+    }
+    "        $([int]$sw.Elapsed.TotalSeconds) 秒"
+}
 foreach ($video in $videos) {
     $n++
     $stem = $video.BaseName
     $dir = "datasets\$Run\$stem"
+    $events = "datasets\$Run\events\$stem.jsonl"
     "=== [$n/$($videos.Count)] $($video.Name)  $(Get-Date -Format HH:mm:ss)"
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     New-Item -ItemType Directory -Force "$dir\seg", "$dir\tracks", "datasets\$Run\events", "datasets\$Run\overlay", "datasets\$Run\evidence\$stem" | Out-Null
     if (-not (Test-Path "$dir\seg\masks.npz")) {
-        "  [1/5] 斑馬線分割 (GPU)"
-        & $labeling scripts\segment_crosswalk.py --video $video.FullName --model runtime\models\mask2former-mapillary --stride 3 --output "$dir\seg"
+        Invoke-Step "[1/5] 斑馬線分割 (GPU)" { & $labeling scripts\segment_crosswalk.py --video $video.FullName --model runtime\models\mask2former-mapillary --stride 3 --output "$dir\seg" }
     } else { "  [1/5] 沿用既有斑馬線遮罩" }
     if ($ReuseTracks -and (Test-Path "$dir\tracks\raw_tracks.json")) {
-        "  [2/5] 沿用既有追蹤結果(只重做後照鏡過濾)"
-        & $modern scripts\track_video.py --video $video.FullName --refilter "$dir\tracks\raw_tracks.json"
+        Invoke-Step "[2/5] 沿用既有追蹤結果(只重做後照鏡過濾)" { & $modern scripts\track_video.py --video $video.FullName --refilter "$dir\tracks\raw_tracks.json" }
     } else {
-        "  [2/5] 偵測與追蹤 ($Weights, conf $Conf, GPU)"
-        & $modern scripts\track_video.py --video $video.FullName --weights $Weights --conf $Conf --imgsz $ImgSz --output "$dir\tracks"
+        Invoke-Step "[2/5] 偵測與追蹤 ($Weights, conf $Conf, GPU)" { & $modern scripts\track_video.py --video $video.FullName --weights $Weights --conf $Conf --imgsz $ImgSz --output "$dir\tracks" }
     }
-    "  [3/5] 讓行人規則 ($Mode)"
-    & $modern yield_image_rule.py --video $video.FullName --masks "$dir\seg\masks.npz" --tracks "$dir\tracks\raw_tracks.json" --geometry $Geometry --output "datasets\$Run\events\$stem.jsonl" @waiting
-    "  [4/5] 疊圖影片"
-    & $modern scripts\render_overlay.py --video $video.FullName --masks "$dir\seg\masks.npz" --tracks "$dir\tracks\raw_tracks.json" --events "datasets\$Run\events\$stem.jsonl" --labels "labels\$stem.jsonl" --output "datasets\$Run\overlay\$stem.mp4"
-    "  [5/5] 證據片段與截圖"
-    & $modern scripts\export_evidence.py --video $video.FullName --events "datasets\$Run\events\$stem.jsonl" --output "datasets\$Run\evidence\$stem" --pad-seconds 2
+    Invoke-Step "[3/5] 讓行人規則 ($Mode)" { & $modern yield_image_rule.py --video $video.FullName --masks "$dir\seg\masks.npz" --tracks "$dir\tracks\raw_tracks.json" --geometry $Geometry --output $events $waiting }
+    Invoke-Step "[4/5] 疊圖影片" { & $modern scripts\render_overlay.py --video $video.FullName --masks "$dir\seg\masks.npz" --tracks "$dir\tracks\raw_tracks.json" --events $events --labels "labels\$stem.jsonl" --output "datasets\$Run\overlay\$stem.mp4" }
+    Invoke-Step "[5/5] 證據片段與截圖" { & $modern scripts\export_evidence.py --video $video.FullName --events $events --output "datasets\$Run\evidence\$stem" --pad-seconds 2 }
     $speed = & $modern -c "import sys; sys.path.insert(0, 'scripts'); import run_pipeline as r; print(r.speed_text(r._video_seconds(sys.argv[1]), float(sys.argv[2])))" $video.FullName $watch.Elapsed.TotalSeconds
     "  $($video.Name):$speed"
 }
-& $modern scripts\list_candidates.py --run-dir "datasets\$Run"
+Invoke-Step "候選清單" { & $modern scripts\list_candidates.py --run-dir "datasets\$Run" }
 "全部完成 $(Get-Date -Format HH:mm:ss)。候選清單:datasets\$Run\candidates.csv  證據:datasets\$Run\evidence  事件:datasets\$Run\events  疊圖:datasets\$Run\overlay"
 Stop-Transcript | Out-Null

@@ -25,6 +25,14 @@ crosswalk as a vehicle passes counts and standing still at the edge does not. (I
 This looks at frames after the contact, so it is an offline review tool. `--include-waiting` disables the filter. The 0.1 threshold
 was chosen between the only two pedestrians seen (0.03 and 0.25 person heights deep): thin evidence, to be revisited with more clips.
 
+**Review mode (2026-11-07).** The definition above stays: `yield_image_rule.py` alone still drops waiting pedestrians unless
+given `--include-waiting`. The tool is used as a 檢舉 review aid, where a human checks every candidate, so
+`scripts/run_pipeline.py` now defaults to `--mode review`, which passes `--include-waiting`. `--mode strict` keeps the filter.
+With the filter off, a vehicle that meets both a waiting and a crossing pedestrian reports the crossing pair, not whichever came
+first. This keeps every strict event in review output. Each event line carries `"mode": "review"|"strict"`. Its existing
+`pedestrian_entered_crosswalk` field becomes the 優先 column of `candidates.csv` (高 = entered).
+On the labelled set, review finds 12/17 with 39 candidates and strict finds 8/17 with 17 candidates (`scripts/eval_rule.py`).
+
 ## Real-video result (helmet-cam night clip, 900 frames, 60 fps) — NOT a measured accuracy
 - Near-crosswalk segmentation found the crosswalk in all 18 visually checked frames (even with vehicles/pedestrians occluding).
 - With the user's definition: 1 event, f660 (11.0 s): a taxi drives across the crosswalk as the pedestrian steps onto its left end.
