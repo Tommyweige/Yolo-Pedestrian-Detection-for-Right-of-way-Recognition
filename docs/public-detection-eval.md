@@ -126,5 +126,19 @@ So the dominant mask failure is the carve-out under occluders, not the edge posi
 0.409 (it swallows the kerbs, so kerb standers become crossers). A fix needs the crosswalk shape behind occluders, e.g.
 accumulating the mask over frames before people and cars cover it, or the fitted-crosswalk geometry
 (`geometry="crosswalk"`) extended to judge the foot against the fitted band instead of the per-frame mask.
+
+Shapes that cover what occluders hide, all worse than the per-frame mask (0.471):
+
+| crosswalk shape | F1 |
+|---|---|
+| fitted quadrilateral (`geometry="crosswalk"`, existing) | 0.414 (P 12 / TP 6) |
+| per-frame mask, filled up to the blob's convex hull only under detected person/vehicle boxes | 0.410 (P 22 / TP 8) |
+| `zebra` class of the fine-tuned `yolo26n-traffic-v1` (axis-aligned boxes) | not usable: 0 boxes on 6 of our miss frames even at conf 0.05 / imgsz 640, while it finds 162 of 164 of its own val images |
+
+The zebra detector is a domain problem before it is an angle problem: it learned from Roboflow street-view screenshots
+(see `docs/finetune-yolo26n.md`) and does not fire on these dashcam frames. And an axis-aligned box over a tilted
+crosswalk covers the kerbs beside it, which is the convex-hull failure above (kerb standers become crossers). An oriented
+or polygon version would need relabelling; the Mask2Former masks already give the polygon, so the gap is occlusion, not
+shape.
 Fine-tuning on iVS train (89k frames) could help night pedestrians and scooters, but its scooter boxes include the rider,
 so the rule's rider test would have to change with it.
