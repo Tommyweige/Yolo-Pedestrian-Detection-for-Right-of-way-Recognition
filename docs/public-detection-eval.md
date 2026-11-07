@@ -142,3 +142,48 @@ or polygon version would need relabelling; the Mask2Former masks already give th
 shape.
 Fine-tuning on iVS train (89k frames) could help night pedestrians and scooters, but its scooter boxes include the rider,
 so the rule's rider test would have to change with it.
+
+## Follow-up: learned crosswalk completion behind occluders (2026-11-07)
+
+Question: does a model that fills in the crosswalk hidden behind people and vehicles fix the carve-out misses above?
+
+- Model: small UNet on the mask only (input = visible mask + unknown region, target = the stored mask), trained on
+  synthetic rectangular holes sized like real detection boxes (60% centred on the mask edge), loss only on hole pixels
+  not under a real box. 180x320, 3000 steps, 7 folds, each holding out one clip. Threshold 0.5, fixed in advance.
+- The completed mask is used only for the pedestrian test; vehicle contact and the crosswalk components stay on the
+  original mask. Scripts: `scripts/experiments/crosswalk_completion/` (local only, read private data).
+
+Shape recovery on the held-out clip (synthetic holes, mean of 7 folds):
+
+| fill | IoU | wrongly filled share |
+|---|---|---|
+| model | 0.797 | 0.069 |
+| convex hull | 0.367 | 0.186 |
+| morphological close | 0.055 | 0.090 |
+
+Rule result, each clip scored with the fold model that never saw it:
+
+| variant | all footage (17 labels) | original footage only (10 labels) |
+|---|---|---|
+| default | P 17 / TP 8, F1 0.471 | P 9 / TP 4, F1 0.421 |
+| fill under all boxes | P 24 / TP 9, F1 0.439 | P 13 / TP 5, F1 0.435 |
+| fill under person boxes only | P 23 / TP 9, F1 0.450 | P 12 / TP 5, F1 0.455 |
+
+One extra hit, 3-4 extra false alarms: within the stop rule (gain of at most one event, or any extra false alarms, is
+noise). **Not adopted.** The shape is recovered well; the full crosswalk also puts kerb-end standers "on" it, which is
+where the false alarms come from. A second round with Roboflow masks (1542 usable) was not run: the shape is not the limit.
+
+Temporal union of earlier masks inside boxes (±2/5/10 stored frames) was worse: F1 0.429 / 0.391 / 0.375.
+
+### Replays and the "original footage only" column
+
+The compilations repeat incidents as zoomed slow-motion replays (the dashcam timestamp overlay disappears or is cropped).
+Replays were found per clip and excluded from scoring (events and labels inside them dropped). 9 of 17 labels sat in
+replays; matching each replay frame back to the original (SIFT + homography, then by eye) showed 5 are the same incident
+as an existing original label, and 2 incidents had no original label and were added at the matched time (one of them
+estimated by eye, unconfirmed). The original-only labels live outside the repo, beside the private labels.
+
+### Conclusion for the project
+
+Every variant tried in these follow-ups lands within 1-2 events of the default on 10-17 labels, so this data cannot
+rank them. Work moves to the review-assist use (high recall, human confirms) instead of tuning the automatic decision.
