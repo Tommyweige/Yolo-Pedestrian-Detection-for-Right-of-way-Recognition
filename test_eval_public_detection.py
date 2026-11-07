@@ -116,7 +116,11 @@ def _write_ivs(root):
         (annotations / f"{Path(name).stem}.xml").write_text(VOC, encoding="utf-8")
 
 
-def test_main_uses_cache_without_importing_ultralytics(tmp_path, capsys):
+def test_main_uses_cache_without_importing_ultralytics(tmp_path, capsys, monkeypatch):
+    # Other tests in the same pytest process may already have imported torch, so checking sys.modules afterwards
+    # says nothing; instead make both imports fail for the duration of this call.
+    monkeypatch.setitem(sys.modules, "torch", None)
+    monkeypatch.setitem(sys.modules, "ultralytics", None)
     ivs = tmp_path / "ivs"
     _write_ivs(ivs)
     cache = tmp_path / "cache.json"
@@ -131,8 +135,6 @@ def test_main_uses_cache_without_importing_ultralytics(tmp_path, capsys):
     assert code == 0
     assert output.exists()
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert "ultralytics" not in sys.modules
-    assert "torch" not in sys.modules
 
 
 if __name__ == "__main__":
