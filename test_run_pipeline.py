@@ -22,6 +22,8 @@ def make_args(**overrides):
         "reuse_tracks": False,
         "geometry": "image",
         "mode": "strict",
+        "serial": False,
+        "only": [],
         "dry_run": False,
     }
     values.update(overrides)
@@ -162,6 +164,40 @@ class SpeedTest(unittest.TestCase):
         self.assertEqual(run_pipeline.speed_text(None, 12.4), "處理 12 秒")
 
 
+class FakePopen:
+    """Stands in for subprocess.Popen; every instance is recorded so tests can see what ran and in what order."""
+
+    started = []
+    codes = {}  # script name -> exit code; default 0
+
+    def __init__(self, command, cwd=None):
+        self.command, self.cwd, self.terminated = command, cwd, False
+        script = Path(command[1]).name
+        self.code = FakePopen.codes.get(script, 0)
+        FakePopen.started.append(self)
+
+    def poll(self):
+        return -15 if self.terminated else self.code
+
+    def wait(self):
+        return self.poll()
+
+    def terminate(self):
+        self.terminated = True
+        self.code = None
+
+    @classmethod
+    def scripts(cls):
+        return [Path(process.command[1]).name for process in cls.started]
+
+
+class SlowFakePopen(FakePopen):
+    """Still running until terminated."""
+
+    def poll(self):
+        return -15 if self.terminated else None
+
+
 class MainTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -172,6 +208,13 @@ class MainTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.folder = self.root / "videos"
         self.folder.mkdir()
+        FakePopen.started, FakePopen.codes = [], {}
+        popen = mock.patch("run_pipeline.subprocess.Popen", FakePopen)
+        popen.start()
+        self.addCleanup(popen.stop)
+        nap = mock.patch("run_pipeline.time.sleep")
+        nap.start()
+        self.addCleanup(nap.stop)
 
     def run_main(self, argv):
         output = io.StringIO()
@@ -188,12 +231,9 @@ class MainTest(unittest.TestCase):
     def test_dry_run_prints_commands_only_and_creates_nothing(self):
         self.add_video("b.mp4")
         self.add_video("a.MOV")
-        with mock.patch("run_pipeline.subprocess.run") as run:
-            code, output, _ = self.run_main(
-                ["--folder", str(self.folder), "--run", "scratch", "--dry-run"]
-            )
+        code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch", "--dry-run"])
         self.assertEqual(code, 0)
-        run.assert_not_called()
+        self.assertEqual(FakePopen.started, [])
         self.assertFalse((self.root / "datasets").exists())
         lines = output.splitlines()
         self.assertEqual(len(lines), 11)  # 2 videos x 5 steps, then the run's candidate list
@@ -201,21 +241,40 @@ class MainTest(unittest.TestCase):
         self.assertIn("a.MOV", lines[0])
         self.assertNotIn(str(self.folder / "b.mp4"), lines[0])
 
-    def test_a_failing_step_returns_one_and_stops_before_the_next_video(self):
+    def test_segmentation_and_tracking_run_at_the_same_time_then_the_rest(self):
+        self.add_video("a.mp4")
+        code, _, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
+        self.assertEqual(code, 0)
+        self.assertEqual(FakePopen.scripts(), ["segment_crosswalk.py", "track_video.py", "yield_image_rule.py",
+                                               "render_overlay.py", "export_evidence.py", "list_candidates.py"])
+
+    def test_a_failing_step_stops_its_partner_and_every_later_step(self):
         self.add_video("a.mp4")
         self.add_video("b.mp4")
-        calls = []
-
-        def fake_run(command, check=False, cwd=None):
-            calls.append(command)
-            return mock.Mock(returncode=1)
-
-        with mock.patch("run_pipeline.subprocess.run", side_effect=fake_run):
+        FakePopen.codes = {"track_video.py": 1}
+        with mock.patch("run_pipeline.subprocess.Popen", side_effect=lambda command, cwd=None: (
+                FakePopen if "track_video.py" in command[1] else SlowFakePopen)(command, cwd)):
             code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
         self.assertEqual(code, 1)
-        self.assertEqual(len(calls), 1)
-        self.assertIn("a.mp4", " ".join(calls[0]))
+        self.assertEqual(FakePopen.scripts(), ["segment_crosswalk.py", "track_video.py"])
+        self.assertTrue(FakePopen.started[0].terminated)  # the still-running segmentation is stopped
         self.assertIn("失敗", output)
+        self.assertIn("track_video.py", output)
+
+    def test_serial_runs_one_step_at_a_time(self):
+        self.add_video("a.mp4")
+        FakePopen.codes = {"segment_crosswalk.py": 1}
+        code, _, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch", "--serial"])
+        self.assertEqual(code, 1)
+        self.assertEqual(FakePopen.scripts(), ["segment_crosswalk.py"])
+
+    def test_only_keeps_videos_whose_name_contains_a_given_text(self):
+        self.add_video("apple.mp4")
+        self.add_video("banana.mp4")
+        code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "x", "--dry-run", "--only", "nan"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("apple", output)
+        self.assertIn("banana", output)
 
     def test_a_missing_folder_or_one_without_videos_returns_two(self):
         self.assertEqual(self.run_main(["--folder", str(self.root / "nope"), "--run", "x"])[0], 2)
@@ -223,21 +282,16 @@ class MainTest(unittest.TestCase):
 
     def test_every_step_runs_from_the_repository_root(self):
         self.add_video("a.mp4")
-        with mock.patch("run_pipeline.subprocess.run") as run:
-            run.return_value = mock.Mock(returncode=0)
-            code, _, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
+        code, _, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
         self.assertEqual(code, 0)
-        self.assertEqual(run.call_count, 6)  # 5 steps + the candidate list
-        for called in run.call_args_list:
-            self.assertEqual(called.kwargs.get("cwd"), run_pipeline.ROOT)
+        self.assertEqual(len(FakePopen.started), 6)  # 5 steps + the candidate list
+        for process in FakePopen.started:
+            self.assertEqual(process.cwd, run_pipeline.ROOT)
 
     def test_success_runs_every_step_and_appends_the_log(self):
         self.add_video("a.mp4")
-        with mock.patch("run_pipeline.subprocess.run") as run:
-            run.return_value = mock.Mock(returncode=0)
-            code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
+        code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
         self.assertEqual(code, 0)
-        self.assertEqual(run.call_count, 6)  # 5 steps + the candidate list
         self.assertIn("=== [1/1] a.mp4", output)
         self.assertIn("全部完成", output)
         log = self.root / "datasets" / "scratch.log"

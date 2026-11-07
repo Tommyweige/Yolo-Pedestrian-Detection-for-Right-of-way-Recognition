@@ -1,5 +1,5 @@
-# 跨平台批次流程：斑馬線分割 -> 追蹤 -> 讓行人規則 -> 疊圖 -> 證據片段，最後列出整批候選清單 datasets/<run>/candidates.csv
-"""以 Python 重寫 run_pipeline.ps1 的流程，Windows 與 Linux 共用。"""
+# 跨平台批次流程：斑馬線分割 + 追蹤（同時跑）-> 讓行人規則 -> 疊圖 + 證據片段（同時跑），最後列出整批候選清單 datasets/<run>/candidates.csv
+"""批次流程本體，Windows 與 Linux 共用；run_pipeline.ps1 只是幫它設好兩個 Python 環境的外殼。"""
 
 from __future__ import annotations
 
@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parent.parent
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
 STEPS = 5
 PAD_SECONDS = 2  # 證據片段在規則的證據窗前後各多留幾秒，方便人工判斷前因後果
+# 互不依賴的步驟同時跑：分割與追蹤一起佔 GPU（各自的輸出與分開跑時逐位元相同，20 秒影片 109 -> 78 秒，
+# 顯存峰值約 4 GB）；疊圖與證據片段都只讀事件檔。--serial 改回一次一步（顯存不夠時用）。
+TOGETHER = ((1, 2), (3,), (4, 5))
 
 
 def build_commands(video: Path, args, root: Path, environ) -> list[list[str]]:
@@ -186,6 +189,41 @@ def _video_seconds(video: Path) -> float | None:
     return frames / fps if fps and frames else None
 
 
+def step_groups(steps, serial: bool):
+    """把 _plan 的步驟依 TOGETHER 分組；serial 時每步自成一組。"""
+    if serial:
+        return [[step] for step in steps]
+    groups = []
+    for numbers in TOGETHER:
+        group = [step for step in steps if step[0] in numbers]
+        if group:
+            groups.append(group)
+    return groups
+
+
+def run_together(commands, cwd, on_done=None):
+    """同時啟動所有指令並等它們結束；有一個失敗就停掉其餘的。回傳 None 或 (失敗的指令, 結束碼)。"""
+    started = time.perf_counter()
+    pending = [(command, subprocess.Popen(command, cwd=cwd)) for command in commands]
+    failed = None
+    while pending:
+        for item in list(pending):
+            command, process = item
+            code = process.poll()
+            if code is None:
+                continue
+            pending.remove(item)
+            if failed is None and code != 0:
+                failed = (command, code)
+                for _, other in pending:
+                    other.terminate()
+            elif failed is None and on_done:
+                on_done(command, time.perf_counter() - started)
+        if pending:
+            time.sleep(0.5)
+    return failed
+
+
 def _python(environ, variable: str) -> str:
     return (environ or {}).get(variable) or sys.executable
 
@@ -211,6 +249,8 @@ def _parse_args(argv=None):
         default="strict",
         help="strict（預設：只報上了斑馬線的行人）或 review（路緣等待者也列為候選；多找到很少，候選多很多）",
     )
+    parser.add_argument("--only", nargs="*", default=[], help="只處理檔名含這些字串的影片")
+    parser.add_argument("--serial", action="store_true", help="一次只跑一步（顯存不夠同時放分割與追蹤時用）")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -246,6 +286,8 @@ def main(argv=None) -> int:
         ),
         key=lambda path: path.name,
     )
+    if args.only:
+        videos = [path for path in videos if any(text in path.name for text in args.only)]
     if not videos:
         print(f"錯誤：資料夾內沒有影片：{folder}", file=sys.stderr)
         return 2
@@ -267,30 +309,34 @@ def main(argv=None) -> int:
             _emit(f"=== [{number}/{total}] {video.name}  {_now()}", log)
         video_start = time.perf_counter()
 
-        for step, description, command in _plan(video, args, root, os.environ):
-            if args.dry_run:
+        steps = _plan(video, args, root, os.environ)
+        if args.dry_run:
+            for _, _, command in steps:
                 if command is not None:
                     print(shlex.join(command))
+            continue
+        names = {tuple(command): f"[{step}/{STEPS}]" for step, _, command in steps if command is not None}
+        for group in step_groups(steps, args.serial):
+            commands = [command for _, _, command in group if command is not None]
+            together = "（同時跑）" if len(commands) > 1 else ""
+            for step, description, _ in group:
+                _emit(f"  [{step}/{STEPS}] {description}{together}", log)
+            if not commands:
                 continue
-            _emit(f"  [{step}/{STEPS}] {description}", log)
-            if command is None:
-                continue
-            step_start = time.perf_counter()
-            result = subprocess.run(command, check=False, cwd=root)
-            if result.returncode != 0:
-                _emit(f"失敗：{shlex.join(command)}（結束碼 {result.returncode}）", log)
+            failed = run_together(commands, root, lambda command, seconds: _emit(
+                f"        {names[tuple(command)]} 完成，{seconds:.0f} 秒", log))
+            if failed:
+                _emit(f"失敗：{shlex.join(failed[0])}（結束碼 {failed[1]}）", log)
                 return 1
-            _emit(f"        {time.perf_counter() - step_start:.0f} 秒", log)
-        if not args.dry_run:
-            _emit(f"  {video.name}：{speed_text(_video_seconds(video), time.perf_counter() - video_start)}", log)
+        _emit(f"  {video.name}：{speed_text(_video_seconds(video), time.perf_counter() - video_start)}", log)
 
     command = candidate_list_command(args, root, os.environ)
     if args.dry_run:
         print(shlex.join(command))
         return 0
-    result = subprocess.run(command, check=False, cwd=root)
-    if result.returncode != 0:
-        _emit(f"失敗：{shlex.join(command)}（結束碼 {result.returncode}）", log)
+    failed = run_together([command], root)
+    if failed:
+        _emit(f"失敗：{shlex.join(command)}（結束碼 {failed[1]}）", log)
         return 1
     _emit(
         f"全部完成 {_now()}。候選清單:datasets/{args.run}/candidates.csv  證據:datasets/{args.run}/evidence"
