@@ -38,8 +38,13 @@ jobs:
           name: linux-py312-modern-cpu-lock
           path: linux-py312-modern-cpu.txt
 
+      # Test tool only, installed after the lock is frozen so it stays out of the runtime lock.
+      # Some test files are pytest-style (pytest.approx, parametrize); pytest also runs the unittest ones.
+      - name: Install pytest
+        run: pip install pytest==8.4.2
+
       - name: Run the test suite
-        run: python -m unittest discover -p "test_*.py" -v
+        run: python -m pytest test_*.py -v
 
   rust:
     runs-on: ubuntu-latest
