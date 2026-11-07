@@ -46,7 +46,35 @@ Vehicle box motion around the event (shift and scale over 0.5 s) does not separa
 moving too. Replays are an artifact of the YouTube compilations, not of real dashcam use: they inflate false alarms
 here but would not occur in deployment. Fine-tuning the detector for scooters would remove at most one false alarm.
 
-Next check: count ID switches / track fragments on our own clips (are the rule's pairing failures caused by fragmented
-pedestrian tracks?).
+## Follow-up: track fragments and the rule's misses (2026-11-07)
+
+Tracks on our 7 clips are very fragmented: the median person track is 7-24 frames (under 0.5 s on most clips), and a
+simple linker (successor starts within 0.5 s, within one box height of the end, similar size) finds 297 person and 402
+vehicle links. **Stitching those links and re-running the rule changes nothing** (P 17 / TP 8 / L 17, F1 0.471 both
+ways), so fragmentation is not what limits it.
+
+Where each of the 9 missed labels drops out (rule stages checked frame by frame over ±1.5 s, then visually):
+
+| stage | misses |
+|---|---|
+| pedestrian is at the crosswalk but classed `waiting_at_edge` (foot at or just past the mask edge, or on a thin far band), so the crossing filter drops it | 5 |
+| person and vehicle both on the crosswalk but never paired (lateral gap) | 1 |
+| pair seen in only 1 frame (shorter than `min_seconds`) | 1 |
+| event found but 1.5 s after the label (outside the ±1 s match) | 1 |
+| person and vehicle rarely detected on the crosswalk at all | 1 |
+
+The biggest lever is therefore the on-crosswalk test at the mask edge, which is also what decides the "curb stander"
+false alarms above: loosening it trades misses for false alarms (the nested-LOVO grid over `min_inside_person_heights`
+found no net gain). Two structural variants tried after seeing the misses, in-sample only:
+
+| variant | P / TP | F1 |
+|---|---|---|
+| default | 17 / 8 | 0.471 |
+| `adaptive_depth=True` (existing option: depth need scaled to a thin band) | 18 / 9 | 0.514 |
+| crossing test over the whole contact, not just ±1 s of first contact | 21 / 9 | 0.474 |
+| both | 22 / 9 | 0.462 |
+
+`adaptive_depth` gains one event in one clip; under nested LOVO that clip's fold falls back to the default, so there is
+no out-of-sample evidence for it. Not adopted.
 Fine-tuning on iVS train (89k frames) could help night pedestrians and scooters, but its scooter boxes include the rider,
 so the rule's rider test would have to change with it.
