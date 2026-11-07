@@ -30,7 +30,23 @@ Reading it:
 - **Missed pedestrians** (564) are mostly dark night scenes, motion blur, and people half-hidden behind parked scooters on
   the sidewalk (visual check of a sample). 35% of them have a detection at IoU 0.3-0.5 (a loose box rather than none).
 
-Next checks: count ID switches / track fragments on our own clips (are the rule's pairing failures caused by fragmented
-pedestrian tracks?), and check whether the rejected night-motorcycle false alarms have a rider without a motorcycle box.
+## Follow-up: what the rule's false alarms actually are (2026-11-07)
+
+The rule's 8 unmatched events (default params, image geometry, all in two clips, all human-rejected) were checked frame
+by frame. The "rider without a motorcycle box" hypothesis explains only **1 of 8**:
+
+| cause | count |
+|---|---|
+| zoomed slow-motion **replay** of an incident already shown (the compilation videos repeat the clip enlarged) | 3 |
+| real pedestrian on/at the crosswalk, vehicle nearby, but the reviewer judged it not a failure to yield | 2 |
+| person standing at the curb or frame edge beside waiting scooters, not crossing | 2 |
+| rider + scooter boxed as one `person`, no motorcycle box (the iVS-predicted failure) | 1 |
+
+Vehicle box motion around the event (shift and scale over 0.5 s) does not separate hits from false alarms; the camera is
+moving too. Replays are an artifact of the YouTube compilations, not of real dashcam use: they inflate false alarms
+here but would not occur in deployment. Fine-tuning the detector for scooters would remove at most one false alarm.
+
+Next check: count ID switches / track fragments on our own clips (are the rule's pairing failures caused by fragmented
+pedestrian tracks?).
 Fine-tuning on iVS train (89k frames) could help night pedestrians and scooters, but its scooter boxes include the rider,
 so the rule's rider test would have to change with it.
