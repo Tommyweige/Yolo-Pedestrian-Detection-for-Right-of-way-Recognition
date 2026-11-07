@@ -76,5 +76,29 @@ found no net gain). Two structural variants tried after seeing the misses, in-sa
 
 `adaptive_depth` gains one event in one clip; under nested LOVO that clip's fold falls back to the default, so there is
 no out-of-sample evidence for it. Not adopted.
+
+## Follow-up: does the pedestrian's trajectory separate edge cases? (2026-11-07)
+
+Question before building a trajectory simulator: can motion tell a labelled "edge" pedestrian (rule says waiting) from
+waiting candidates nobody labelled? Candidates = rule events with `require_crossing=False`; per candidate, over ±1.5 s of
+the pedestrian track: foot depth into the mask (negative = outside, in person heights), its trend, and foot speed.
+
+| group | n | deepest foot, median (p25-p75) | depth trend /s | speed, person heights/s |
+|---|---|---|---|---|
+| hit (entered) | 5 | 0.11 (0.08-0.11) | 0.05 | 2.9 |
+| false alarm (entered, unlabelled) | 8 | 0.08 (0.07-0.10) | 0.03 | 2.4 |
+| labelled, rule says waiting | 11 | 0.03 (-0.09-0.04) | -0.03 | 4.5 |
+| waiting, unlabelled | 15 | -0.20 (-0.25 to -0.06) | -0.01 | 4.0 |
+
+- **Motion does not separate them**: depth trend and speed overlap completely. "Is the pedestrian moving toward the
+  crosswalk" carries no signal at this data size, so a trajectory model trained on simulated motion has nothing to learn here.
+- **Only the foot position does, partly**: labelled edge cases reach the mask edge (about 0), unlabelled waiters stay
+  about 0.2 person heights outside, but 4 of 15 waiters sit in the same band.
+- Counting a foot up to 0.05 person heights outside the mask as on the crosswalk: in-sample F1 0.512 (P 26 / TP 11), but
+  nested LOVO over margins {0, 0.05, 0.1} gives **0.462**, below the default 0.471: two of the three gained events come
+  from one clip and vanish when it is held out. Not adopted.
+
+So the edge decision is ambiguous given the current mask: whether the gap is mask error or labelling judgement can only be
+told by measuring the mask edge against hand-marked crosswalk edges.
 Fine-tuning on iVS train (89k frames) could help night pedestrians and scooters, but its scooter boxes include the rider,
 so the rule's rider test would have to change with it.
