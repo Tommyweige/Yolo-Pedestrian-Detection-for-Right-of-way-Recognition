@@ -18,6 +18,7 @@ comparable to each other (docs/yield-image-rule.md).
 Output is a candidate for review, not a legal finding.
 """
 import argparse
+import bisect
 import json
 import sys
 from dataclasses import dataclass, asdict
@@ -560,15 +561,23 @@ def detect(mask_at, tracks, params, frames):
 
 
 def load_mask_provider(path, shape=(360, 640)):
+    """mask_at(frame): the latest segmented mask at or before the frame (read-only, shared between calls)."""
     data = np.load(path)
     frames = sorted(int(k[1:]) for k in data.files)
     size = shape[0] * shape[1]
+    cache = {}
 
     def mask_at(frame):
-        usable = [f for f in frames if f <= frame]
-        if not usable:
+        index = bisect.bisect_right(frames, frame)  # a linear scan here made an hour of video quadratic
+        if index == 0:
             return None
-        return np.unpackbits(data[f"f{usable[-1]}"])[:size].astype(bool).reshape(shape)
+        key = frames[index - 1]
+        if key not in cache:
+            cache.clear()  # frames are asked for in order, so only the current mask is worth keeping
+            mask = np.unpackbits(data[f"f{key}"])[:size].astype(bool).reshape(shape)
+            mask.setflags(write=False)
+            cache[key] = mask
+        return cache[key]
     return mask_at, frames
 
 

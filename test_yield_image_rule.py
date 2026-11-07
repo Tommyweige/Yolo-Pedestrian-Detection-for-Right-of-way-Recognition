@@ -440,5 +440,36 @@ class TurningCamera(unittest.TestCase):
         self.assertEqual(crosswalk_axis(tilted_mask((320, 180), 90, 90, 0)), (1.0, 0.0))  # not elongated: horizontal fallback
 
 
+class MaskProviderTest(unittest.TestCase):
+    """load_mask_provider: the latest segmented frame at or before the asked frame; looked up by bisection."""
+
+    def setUp(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = f"{tmp.name}/masks.npz"
+        masks = {}
+        for number in (1, 4, 7):
+            mask = np.zeros((360, 640), bool)
+            mask[0, :number] = True  # row 0 holds the frame number as a count of set pixels
+            masks[f"f{number}"] = np.packbits(mask)
+        np.savez_compressed(self.path, **masks)
+
+    def test_returns_the_latest_mask_at_or_before_the_frame(self):
+        from yield_image_rule import load_mask_provider
+        mask_at, frames = load_mask_provider(self.path)
+        self.assertEqual(frames, [1, 4, 7])
+        self.assertIsNone(mask_at(0))
+        got = {frame: int(mask_at(frame)[0].sum()) for frame in range(1, 10)}
+        self.assertEqual(got, {1: 1, 2: 1, 3: 1, 4: 4, 5: 4, 6: 4, 7: 7, 8: 7, 9: 7})
+
+    def test_the_shared_mask_cannot_be_changed_by_a_caller(self):
+        from yield_image_rule import load_mask_provider
+        mask_at, _ = load_mask_provider(self.path)
+        with self.assertRaises(ValueError):
+            mask_at(5)[0, 0] = False
+        self.assertEqual(int(mask_at(4)[0].sum()), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

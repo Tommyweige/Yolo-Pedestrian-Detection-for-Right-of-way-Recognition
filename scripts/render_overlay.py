@@ -4,6 +4,7 @@ Read-only on the source video. Overlay: green tint = crosswalk mask (nearest seg
 yellow box = vehicle (id shown), red banner = predicted event (+-1 s), blue banner = human label (+-1 s).
 """
 import argparse
+import bisect
 import json
 import sys
 from pathlib import Path
@@ -14,6 +15,23 @@ from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = "C:/Windows/Fonts/msjh.ttc"
 VEHICLES = {"car", "motorcycle", "bus", "truck"}
+
+
+def nearest_frame(frames, number):
+    """Closest segmented frame (the earlier one on a tie), by bisection over the sorted frame list."""
+    index = bisect.bisect_left(frames, number)
+    if index == 0:
+        return frames[0]
+    if index == len(frames):
+        return frames[-1]
+    before, after = frames[index - 1], frames[index]
+    return before if number - before <= after - number else after
+
+
+def text_band_height(font_size, banners, frame_height):
+    """Rows from the top that hold the clock and the banners, with a margin of two font sizes below the last line."""
+    last = 40 + (banners - 1) * (font_size + 10) if banners else 6
+    return min(frame_height, last + 2 * font_size)
 
 
 def read_jsonl(path):
@@ -54,19 +72,19 @@ def main(argv=None):
     font = ImageFont.truetype(FONT_PATH, max(18, out_w // 50))
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    number = 0
+    number, shown, mask = 0, None, None
     while True:
         ok, frame = capture.read()
         if not ok:
             break
         number += 1
         frame = cv2.resize(frame, (out_w, out_h))
-        nearest = min(mask_frames, key=lambda f: abs(f - number))
-        mask = np.unpackbits(masks[f"f{nearest}"])[:360 * 640].astype(bool).reshape(360, 640)
-        mask = cv2.resize(mask.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST).astype(bool)
-        tint = frame.copy()
-        tint[mask] = (0.45 * tint[mask] + 0.55 * np.array([0, 255, 0])).astype(np.uint8)
-        frame = tint
+        nearest = nearest_frame(mask_frames, number)
+        if nearest != shown:  # the same mask covers several frames; unpack and resize it once
+            mask = np.unpackbits(masks[f"f{nearest}"])[:360 * 640].astype(bool).reshape(360, 640)
+            mask = cv2.resize(mask.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST).astype(bool)
+            shown = nearest
+        frame[mask] = (0.45 * frame[mask] + 0.55 * np.array([0, 255, 0])).astype(np.uint8)
         for track_id, kind, x1, y1, x2, y2 in by_frame.get(number, []):
             if kind != "person" and kind not in VEHICLES:
                 continue
@@ -77,14 +95,16 @@ def main(argv=None):
         seconds = number / fps
         banners = [(f"偵測:沒讓行人 @{e['time_s']:.2f}s", (200, 0, 0)) for e in events if abs(seconds - e["time_s"]) <= args.window]
         banners += [(f"人工標記 @{l['time_s']:.2f}s", (0, 90, 220)) for l in labels if abs(seconds - l["time_s"]) <= args.window]
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        band = text_band_height(font.size, len(banners), out_h)  # text only touches the top rows: draw just those
+        image = Image.fromarray(cv2.cvtColor(frame[:band], cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(image)
         draw.text((10, 6), f"{seconds:6.2f}s  frame {number}", font=font, fill=(255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0))
         for i, (text, colour) in enumerate(banners):
             y = 40 + i * (font.size + 10)
             draw.rectangle((10, y, 10 + len(text) * font.size, y + font.size + 6), fill=colour)
             draw.text((14, y), text, font=font, fill=(255, 255, 255))
-        writer.write(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR))
+        frame[:band] = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        writer.write(frame)
         if number % 60 == 0:
             print(f"  {number}/{total}", flush=True)
     writer.release()
