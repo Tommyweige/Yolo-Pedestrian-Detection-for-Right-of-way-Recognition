@@ -6,8 +6,9 @@
 ## 目前狀態
 
 - **不禮讓**：命令列主流程（`scripts/run_pipeline.py`）可以使用，Windows 與 Linux 皆可，GPU 或 CPU 皆可（CPU 很慢）。
-- **Rust 桌面介面**（`rust-ui/`）是之後的主介面，目前仍接舊的偵測後端；改接新流程、一鍵同時偵測闖紅燈與不禮讓，正在進行中，見
-  [docs/adr/0002-rust-ui-dual-detection-in-two-stages.md](docs/adr/0002-rust-ui-dual-detection-in-two-stages.md)。
+- **Rust 桌面介面**（`rust-ui/`）的「未禮讓行人」模式已改接影像規則，見
+  [docs/adr/0004-gui-yield-image-rule-wiring.md](docs/adr/0004-gui-yield-image-rule-wiring.md)；「闖紅燈」模式仍接舊的偵測後端，
+  一鍵同時偵測兩種模式見 [docs/adr/0002-rust-ui-dual-detection-in-two-stages.md](docs/adr/0002-rust-ui-dual-detection-in-two-stages.md)。
 - **`yield_rules.py`**（世界座標規則）只作實驗用，見
   [docs/adr/0001-image-rule-replaces-world-rule.md](docs/adr/0001-image-rule-replaces-world-rule.md)。
 
@@ -49,16 +50,16 @@ python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu
 其中斑馬線分割 106 秒、偵測與追蹤 49 秒、疊圖 16 秒、證據片段 6 秒、規則 3 秒。換算下來，1 小時的行車記錄
 大約要跑 9 小時，適合整夜批次處理。最慢的是斑馬線分割（Mask2Former，每 3 幀做一次）。
 
-### 檢舉輔助模式（預設）與嚴格模式
+### strict（預設）與 review 模式
 
-這個工具的用途是**檢舉輔助**：寧可多報，由人看過每個候選再決定要不要檢舉。所以預設 `--mode review`：
-行人只在斑馬線邊緣等待、車就開過去的情況也列為候選（優先＝低）。`--mode strict` 只報行人已經走上斑馬線的
-情況，候選少很多，但會漏掉更多。在目前的標記資料上，review 找到 12/17 個標記事件、共 39 個候選；
-strict 找到 8/17、共 17 個候選。strict 找到的每一個，review 都有找到（`python scripts/eval_rule.py --include-waiting`
-可重算）。7 支影片、17 個標記事件太少，這些數字只能當參考。
+這個工具是**檢舉輔助**：人會看過每個候選，再決定要不要檢舉。預設 `--mode strict` 只報行人走上斑馬線的情況，
+而且規則本身已經是候選清單（每組車與行人的接觸都報），在目前的標記資料上找到 14/17 個標記事件、共 50 個候選。
+`--mode review` 連只在斑馬線邊緣等待的行人也列為候選（優先＝低）：找到 15/17，但候選暴增到 121 個，
+平均每 2 秒影片就一個，人看不完，所以不當預設。數字可用 `python scripts/eval_rule.py`（加 `--include-waiting`
+即 review）重算。7 支影片、17 個標記事件太少，這些數字只能當參考。
 
 ```bash
-python scripts/run_pipeline.py --folder path/to/videos --run my-run --mode strict
+python scripts/run_pipeline.py --folder path/to/videos --run my-run --mode review
 ```
 
 PowerShell 版 `scripts/run_pipeline.ps1` 有相同的 `-Mode` 參數。
@@ -107,8 +108,10 @@ python -m unittest discover -p "test_*.py"
 
 ## 附錄：舊版 GUI（legacy）
 
-這是舊的 YOLOv8 + DeepSORT 偵測後端（闖紅燈 `*_tf.pt`、不禮讓 `*_zebra.pt`），使用 legacy 環境；最早的 PyQt5 版本保存在
-branch `university-project-pyqt5`（tag `legacy/university-project-pyqt5`），永久保留。
+新版一律從 `rust-ui/` 開始：`python start.py` 啟動 Rust 桌面，透過 `desktop_bridge.py` 呼叫 `detection_backend.py`。
+原本的 PyQt5 介面已從 main 移除，完整快照保存在 branch `university-project-pyqt5`
+（tag `legacy/university-project-pyqt5`），凍結不再維護。
+以下 legacy 段落說明 YOLOv8 + DeepSORT 偵測後端（闖紅燈 `*_tf.pt`、不禮讓 `*_zebra.pt`）使用的 legacy 環境。
 
 ### 專案簡介
 本專案是一個基於 YOLOv8 物件偵測和 DeepSORT 物件追蹤技術的交通違規偵測系統。它提供了一個圖形使用者介面 (GUI)，讓使用者可以選擇影片檔案或資料夾，並執行闖紅燈偵測或車輛不禮讓行人偵測。系統還包含影片旋轉校正功能，以適應不同角度的影片輸入。
@@ -162,8 +165,8 @@ Linux（含 aarch64、CPU-only）沒有現成安裝腳本；實測的系統依�
 
 #### 3. 準備模型權重與測試影片
 
-`controller.py` 不再依賴特定電腦的 `D:` 磁碟路徑；專案內的程式路徑會以
-`controller.py` 所在位置為基準。模型權重因檔案較大且可能包含訓練資料授權，
+`detection_backend.py` 不再依賴特定電腦的 `D:` 磁碟路徑；專案內的程式路徑會以
+`detection_backend.py` 所在位置為基準。模型權重因檔案較大且可能包含訓練資料授權，
 不會放進 Git。**本專案的模型由 TommyPanLab 提供，下載位置是
 [Hugging Face：TommyPanLab/traffic-violation-yolov8](https://huggingface.co/TommyPanLab/traffic-violation-yolov8)。**
 
@@ -278,8 +281,15 @@ $env:TRAFFIC_PYTHON = "C:\path\to\python.exe"
 
 Rust 介面提供影片多選、輸出資料夾、模型選擇、兩種偵測模式、批次與單片進度、
 影片播放／暫停／停止／影格定位，以及 -45° 到 45° 的旋轉校正。
-右側先選擇偵測模式、模型與輸出資料夾，再按「開始分析」。影片清單可切換預覽，
-完整路徑與執行記錄可展開查看；右上角可切換深色／淺色外觀。
+版面分左右兩欄：左邊是播放器，工具列上的下拉選單切換要預覽的影片、旁邊是「匯入影片」；
+右邊有「分析設定」與「不禮讓事件」兩個分頁，處理進度固定在右欄底部。先在「分析設定」選擇偵測模式、
+模型與輸出資料夾，再按「開始分析」；完整路徑與執行記錄可展開查看；右上角可切換深色／淺色外觀。
+「未禮讓行人」模式跑的是影像規則（分割 → 追蹤 → 規則，見
+[docs/adr/0004-gui-yield-image-rule-wiring.md](docs/adr/0004-gui-yield-image-rule-wiring.md)），
+第一筆事件出現時右欄自動切到「不禮讓事件」：時間、車輛、行人與是否需複審，點時間即跳到該影片的該影格；
+同一台車 5 秒內的多筆摺成一列（「N 位行人」），點開看每位行人的時間。清單在右欄自己捲動，展開不會壓縮播放器；
+中間產物與 `events.jsonl`、`run.json` 寫在使用者選的輸出資料夾的 `yield/<影片檔名>/`。
+「闖紅燈」模式仍走舊的 YOLOv8 + DeepSORT 後端。影像規則的輸出與畫面方向無關，因此不套用旋轉校正。
 多選影片時預覽第一部；校正參考影片不會改變偵測清單，按「套用旋轉角度」後才套用於偵測。
 取消偵測會停止 Python 預測程序；若正在旋轉轉檔，會等待轉檔完成才取消。
 預覽使用 Rust 背景執行緒呼叫 Windows Media Foundation 解碼，並將像素直接送至影片紋理；
@@ -331,6 +341,7 @@ python start.py
 cargo check --manifest-path rust-ui/Cargo.toml
 cargo test --manifest-path rust-ui/Cargo.toml
 python test_desktop_bridge.py
+python test_yield_pipeline.py
 python test_traffic_rules.py
 pwsh -File rust-ui/check-ui.ps1 -Python python
 ```
@@ -373,13 +384,7 @@ python scripts/validate_detection.py --video C:\path\to\traffic.mp4 --output C:\
 本機模型來源、六模型檢查、1080p60 實測及效能改善記錄見
 [2026-10-08 驗證報告](docs/performance-validation-2026-10-08.md)。
 
-舊版 PyQt 介面仍可透過以下方式啟動：
-
-```powershell
-python start.py --legacy
-```
-
-以下為舊版介面操作說明，Rust 版使用相同的偵測設定與主要操作。
+以下為介面操作說明；PyQt5 舊版已從 main 移除，Rust 版使用相同的偵測設定與主要操作。
 
 #### 主畫面 (`主畫面` Tab)
 
@@ -426,15 +431,11 @@ python start.py --legacy
 
 ### 專案結構 (核心檔案)
 
--   `start.py`: 應用程式的入口點，啟動 Rust GUI；`--legacy` 啟動 PyQt5。
+-   `start.py`: 應用程式的入口點，啟動 Rust GUI。
 -   `rust-ui/`: Rust 桌面介面與 Cargo 鎖定檔。
 -   `rust-ui/src/video.rs`: Rust 原生影片解碼與預覽執行緒。
 -   `desktop_bridge.py`: Rust 與 Python 偵測程序的 JSON-lines 通訊。
--   `detection_backend.py`: 兩種介面共用的權重驗證、偵測程序與進度事件。
--   `controller.py`: 包含 GUI 的主要邏輯，處理使用者互動、影片選擇、偵測任務的啟動和進度更新。
--   `UI.py`: 由 `UI.ui` 自動生成的 Python 檔案，定義了 GUI 的介面佈局和元件。
--   `UI.ui`: Qt Designer 介面設計檔案，用於視覺化設計 GUI。
--   `opencv_engine.py`: 提供影片資訊讀取功能，使用 OpenCV 庫。
+-   `detection_backend.py`: Rust 介面與命令列工具共用的權重驗證、偵測程序與進度事件。
 -   `requirements.txt`: 主專案的 Python 依賴列表。
 -   `weights/`: 本機使用的 YOLOv8 與 DeepSORT 權重（不納入 Git）。
 -   `YOLOv8_DeepSORT_Object_Tracking/`: 包含 YOLOv8 和 DeepSORT 相關的程式碼和模型。
@@ -449,7 +450,6 @@ python start.py --legacy
 -   **模型權重檔案未找到**: 確保檔名與 `weights/README.md` 相同，或設定
     `YOLO_WEIGHTS_DIR`、`DEEPSORT_REID_CKPT`、`YOLO_TF_MODEL`、`YOLO_ZEBRA_MODEL`。
 -   **影片無法播放或處理**: 檢查影片檔案是否損壞，或格式是否受支援。確保您的系統安裝了必要的影片解碼器。
--   **GUI 介面顯示異常**: 嘗試重新生成 `UI.py` 檔案（如果 `UI.ui` 有修改）。
 
 ### 貢獻
 歡迎任何形式的貢獻！如果您有任何建議、錯誤報告或功能請求，請隨時提交 Issue 或 Pull Request。

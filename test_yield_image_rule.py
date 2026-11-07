@@ -9,7 +9,8 @@ from yield_image_rule import Params, detect
 
 H, W = 360, 640
 SRC = (1920, 1080)  # boxes below are in source pixels; masks are 640x360 (scale 1/3)
-P = Params(fps=60.0, src_size=SRC, min_seconds=0.1)
+P = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=False)   # the low-noise construction, explicit
+DEFAULT = Params(fps=60.0, src_size=SRC, min_seconds=0.1)                         # exactly what the shipped defaults give
 
 
 def mask_with(*rects):
@@ -60,6 +61,31 @@ class ImageRule(unittest.TestCase):
         tracks = [track(1, "person", shallow, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
         self.assertEqual(run(tracks), [])
 
+    # The depth threshold (min_inside_person_heights) is 0.03, the edge of a narrow passing shelf: 0.05 and up lose an
+    # incident and 0.06 is back to the old 0.1 numbers, and the candidate-list construction keeps its last label and
+    # incident only at 0.03. These three pin the shelf down, one clear step either side and the boundary itself, so it
+    # cannot be moved without a test saying what that costs. The foot sits 3 mask rows inside the crosswalk's top edge on
+    # every frame (source boxes are 3x the mask, so a source height of 288-309 px is 96-103 mask px tall - the range where
+    # 3 rows straddles 0.03).
+    def test_foot_just_past_the_depth_threshold_counts_as_crossing(self):
+        # 96 mask px tall -> 3/96 = 0.031, just over 0.03
+        just_inside = (1230, 318, 1290, 606)
+        events = run([track(1, "person", just_inside, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id, e.pedestrian_state) for e in events],
+                         [(10, 1, "on_crosswalk")])
+
+    def test_foot_just_short_of_the_depth_threshold_is_waiting(self):
+        # 103 mask px tall -> 3/103 = 0.029, just under 0.03
+        just_short = (1230, 297, 1290, 606)
+        tracks = [track(1, "person", just_short, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))]
+        self.assertEqual(run(tracks), [])
+
+    def test_foot_exactly_at_the_depth_threshold_counts_as_crossing(self):
+        # 100 mask px tall -> 3/100 = 0.03 exactly, and the comparison is inclusive
+        on_the_boundary = (1230, 306, 1290, 606)
+        events = run([track(1, "person", on_the_boundary, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
+        self.assertEqual([e.pedestrian_state for e in events], ["on_crosswalk"])
+
     def test_pedestrian_stepping_onto_the_crosswalk_as_the_vehicle_passes_counts(self):
         steps = {"id": 1, "kind": "person", "boxes":
                  [[f, 1230, 303, 1290, 603] for f in range(1, 16)] + [[f, 1230, 450, 1290, 750] for f in range(16, 31)]}  # foot row 201 -> 250
@@ -77,6 +103,26 @@ class ImageRule(unittest.TestCase):
         rider = (900, 620, 1000, 800)    # almost entirely inside the motorcycle box
         self.assertEqual(run([track(1, "person", rider, range(1, 31)), track(10, "motorcycle", bike, range(1, 31))]), [])
 
+    def test_a_rider_whose_box_jitters_out_of_the_motorcycle_box_is_still_a_rider(self):
+        # the tracker's box flickers a few pixels outside the motorcycle on some frames; per-frame containment lets the
+        # rider through on those frames and reports the motorcycle it is riding as a failure to yield.
+        bike = (880, 600, 1040, 870)
+        jitter = [[f, *(900, 594, 1000, 800)] if f % 3 == 0 else [f, 900, 620, 1000, 800] for f in range(1, 31)]
+        self.assertEqual(run([{"id": 1, "kind": "person", "boxes": jitter},
+                              track(10, "motorcycle", bike, range(1, 31))]), [])
+
+    def test_a_person_who_walked_past_a_motorcycle_is_a_pedestrian_in_front_of_another_vehicle(self):
+        # v6 10.6 s: the same person passes a scooter here and rides one three seconds later. Pairing the rider
+        # decision to the person alone hides the walking case, which is a real failure to yield.
+        parked = (700, 600, 860, 870)         # the motorcycle they walk past
+        ridden = (860, 560, 1060, 880)        # the one they ride at the end of the clip
+        person = {"id": 1, "kind": "person", "boxes":
+                  [[f, 880, 650, 960, 850] for f in range(1, 16)]        # walking on the crosswalk
+                  + [[f, 900, 620, 1000, 800] for f in range(16, 31)]}   # sitting on `ridden`
+        events = run([person, track(10, "motorcycle", parked, range(1, 31)),
+                      track(11, "motorcycle", ridden, range(16, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+
     def test_pedestrian_in_front_of_a_bus_is_not_a_rider(self):
         bus = (700, 400, 1100, 870)
         walker = (880, 650, 960, 850)    # entirely inside the bus box in the image, but buses have no riders
@@ -93,11 +139,12 @@ class ImageRule(unittest.TestCase):
         self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 2)])
 
     def test_review_mode_reports_the_crossing_pedestrian_rather_than_an_earlier_waiting_one(self):
-        # with the crossing filter off, the vehicle's one event must still be the pair a strict run would report
+        # one event per vehicle with the crossing filter off: the vehicle's one event must still be the pair a strict run
+        # would report (the candidate list reports both pedestrians anyway)
         waiting = (1230, 480, 1290, 585)
         tracks = [track(1, "person", waiting, range(1, 61)), track(2, "person", PED_ON, range(31, 61)),
                   track(10, "car", CAR_ON, range(1, 61))]
-        events = run(tracks, frames=range(1, 61), params=replace(P, require_crossing=False))
+        events = run(tracks, frames=range(1, 61), params=replace(P, require_crossing=False, report_every_contact=False))
         self.assertEqual([(e.vehicle_id, e.pedestrian_id, e.pedestrian_entered_crosswalk) for e in events], [(10, 2, True)])
 
     def test_cli_refuses_to_guess_fps(self):
@@ -118,15 +165,130 @@ class ImageRule(unittest.TestCase):
         strict = Params(fps=60.0, src_size=SRC, min_seconds=0.5)   # needs 30 frames
         self.assertEqual(run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 21))], params=strict), [])
 
-    def test_event_time_is_the_first_frame_of_contact(self):
+    def test_event_time_is_the_contact_start_when_the_pedestrian_is_already_on_the_crosswalk(self):
         strict = Params(fps=60.0, src_size=SRC, min_seconds=0.2)   # needs 12 frames before the event is confirmed
         events = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(5, 31))], params=strict)
         self.assertEqual(events[0].frame, 5)   # the car's first frame on the crosswalk, not frame 16
+        self.assertEqual(events[0].contact_frames, (5, 30))
+
+    def test_pedestrian_who_steps_on_late_in_a_long_contact_counts_and_is_timed_then(self):
+        # the car sits on the crosswalk for 4 s; the pedestrian only steps on 3 s after the contact began, which the
+        # old "1 s around the contact start" window threw away although the pair is real.
+        frames = range(1, 241)
+        steps = {"id": 1, "kind": "person", "boxes":
+                 [[f, 1230, 303, 1290, 603] for f in range(1, 181)] + [[f, 1230, 450, 1290, 750] for f in range(181, 241)]}
+        events = run([steps, track(10, "car", CAR_ON, frames)], frames=frames)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].frame, 181)
+        self.assertEqual(events[0].pedestrian_state, "waiting_at_edge")   # state when the contact began
+        self.assertEqual(events[0].contact_frames, (1, 240))
 
     def test_one_event_per_vehicle_track(self):
         tracks = [track(1, "person", PED_ON, range(1, 31)), track(2, "person", (1350, 700, 1410, 850), range(1, 31)),
                   track(10, "car", CAR_ON, range(1, 31))]
         self.assertEqual(len(run(tracks)), 1)
+
+    # The shipped construction is the candidate list with `pair` at depth 0.03 (user decision, 2026-10-31), so a vehicle
+    # that obstructs two pedestrians in one pass reports both. Every other test here passes its own Params, which is why
+    # this one test is the only thing that fails if the default is flipped back: it pins the default, which is a product
+    # decision and not a free parameter, and the numbers behind it (4.4 -> 7.1 reports per clip) are in
+    # docs/yield-image-rule.md.
+    def test_default_params_report_every_contact_of_a_pass(self):
+        self.assertTrue(DEFAULT.report_every_contact)
+        self.assertEqual(DEFAULT.contact_dedup, "pair")
+        self.assertEqual(DEFAULT.min_inside_person_heights, 0.03)
+        first, second = (1230, 700, 1290, 850), (1350, 700, 1410, 850)
+        tracks = [track(1, "person", first, range(1, 61)), track(2, "person", second, range(70, 121)),
+                  track(10, "car", CAR_ON, range(1, 121))]
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=range(1, 121), params=DEFAULT)],
+                         [(10, 1), (10, 2)])                             # one pass, two pedestrians, two reports
+
+    # The candidate-list construction is the shipped default; these tests spell it out so that a later change to the
+    # default cannot silently rewrite what they check. They pin what its dedup (`pair`) is meant to do: repeats of one
+    # pedestrian inside one vehicle pass are one report, two pedestrians of that pass are two reports.
+    CANDIDATE = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True)
+
+    def test_candidate_list_reports_a_later_contact_of_the_same_vehicle(self):
+        first, second = (1230, 700, 1290, 850), (1350, 700, 1410, 850)
+        tracks = [track(1, "person", first, range(1, 61)), track(2, "person", second, range(120, 181)),
+                  track(10, "car", CAR_ON, range(1, 181))]
+        frames = range(1, 181)
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames)],
+                         [(10, 1)])                                      # one event per vehicle keeps the first
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames, params=self.CANDIDATE)],
+                         [(10, 1), (10, 2)])                             # 2 s apart: two passes, two reports
+
+    def test_candidate_list_merges_repeats_of_one_pedestrian_in_one_pass(self):
+        # The vehicle leaves the crosswalk for 9 frames, so the same pedestrian is picked up again 1.15 s later: one
+        # pedestrian, one pass, one report, and two contacts in the undeduped list.
+        car = {"id": 10, "kind": "car",
+               "boxes": [[f, *CAR_ON] for f in range(1, 61)] + [[f, *CAR_BEFORE] for f in range(61, 70)]
+               + [[f, *CAR_ON] for f in range(70, 121)]}
+        tracks = [track(1, "person", PED_ON, range(1, 121)), car]
+        frames = range(1, 121)
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames, params=self.CANDIDATE)],
+                         [(10, 1)])
+        raw = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup_s=0)
+        self.assertEqual(len(run(tracks, frames=frames, params=raw)), 2)     # the undeduped candidate list
+
+    def test_candidate_list_reports_two_pedestrians_of_one_pass(self):
+        # 1.15 s apart, so one pass: the default dedup is by (vehicle, pedestrian) pair, so both are reported. The earlier
+        # pedestrian's contact is not a reason to withhold the crossing one (docs/yield-image-rule.md).
+        first, second = (1230, 700, 1290, 850), (1350, 700, 1410, 850)
+        tracks = [track(1, "person", first, range(1, 61)), track(2, "person", second, range(70, 121)),
+                  track(10, "car", CAR_ON, range(1, 121))]
+        frames = range(1, 121)
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in run(tracks, frames=frames, params=self.CANDIDATE)],
+                         [(10, 1), (10, 2)])
+
+    # Which contact of a pass survives is a policy, and one pass can touch two pedestrians: someone who has been waiting at
+    # the edge and steps on as the car arrives, and someone already walking across. The three variants must disagree here,
+    # or the rule cannot tell them apart. The waiting one's event time is the frame they step on (16), which is earlier
+    # than the crossing one's contact (20), so "earliest" picks the waiting contact.
+    WAITING_THEN_STEPPING = {"id": 1, "kind": "person", "boxes":
+                             [[f, 1230, 480, 1290, 585] for f in range(1, 16)]     # foot above the edge: waiting
+                             + [[f, *PED_ON] for f in range(16, 41)]}              # steps on at frame 16
+    ALREADY_CROSSING = (1350, 700, 1410, 850)
+
+    def pass_tracks(self, second):
+        return [self.WAITING_THEN_STEPPING, second, track(10, "car", CAR_ON, range(1, 41))]
+
+    def variant(self, name):
+        return Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup=name)
+
+    def test_dedup_earliest_keeps_the_first_contact_of_the_pass(self):
+        second = track(2, "person", self.ALREADY_CROSSING, range(20, 41))
+        events = run(self.pass_tracks(second), frames=range(1, 41), params=self.variant("earliest"))
+        self.assertEqual([(e.pedestrian_id, e.pedestrian_state, e.time_s) for e in events],
+                         [(1, "waiting_at_edge", round(16 / 60, 3))])
+
+    def test_dedup_prefers_the_pedestrian_on_the_crosswalk_over_the_earlier_contact(self):
+        second = track(2, "person", self.ALREADY_CROSSING, range(20, 41))
+        events = run(self.pass_tracks(second), frames=range(1, 41), params=self.variant("on_crosswalk_longest"))
+        self.assertEqual([(e.pedestrian_id, e.pedestrian_state) for e in events], [(2, "on_crosswalk")])
+
+    def test_dedup_preferring_the_crosswalk_falls_back_to_the_first_contact(self):
+        # both pedestrians start out waiting, so nothing is on the crosswalk at contact start: the pass keeps its first
+        waiting_too = {"id": 2, "kind": "person", "boxes":
+                       [[f, 1230, 480, 1290, 585] for f in range(20, 26)] + [[f, *self.ALREADY_CROSSING] for f in range(26, 41)]}
+        events = run(self.pass_tracks(waiting_too), frames=range(1, 41), params=self.variant("on_crosswalk_longest"))
+        self.assertEqual([e.pedestrian_id for e in events], [1])
+
+    def test_dedup_by_pair_keeps_both_pedestrians_of_one_pass(self):
+        second = track(2, "person", self.ALREADY_CROSSING, range(20, 41))
+        events = run(self.pass_tracks(second), frames=range(1, 41), params=self.variant("pair"))
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1), (10, 2)])
+
+    def test_pass_chains_so_a_slow_crossing_stays_one_report(self):
+        # Three pedestrians of one vehicle 1.17 s apart: no contact is more than the window from the next, but the first
+        # and the last are 2.3 s apart. The pass is a chain, so this is one crossing and one report; measuring the window
+        # from the first contact instead would call it two passes and report the 3.25 s pedestrian again.
+        slow = [track(1, "person", PED_ON, range(55, 63)), track(2, "person", PED_ON, range(125, 133)),
+                track(3, "person", PED_ON, range(195, 203)), track(10, "car", CAR_ON, range(1, 221))]
+        events = run(slow, frames=range(1, 221), params=self.variant("earliest"))
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+        raw = Params(fps=60.0, src_size=SRC, min_seconds=0.1, report_every_contact=True, contact_dedup_s=0)
+        self.assertEqual([e.pedestrian_id for e in run(slow, frames=range(1, 221), params=raw)], [1, 2, 3])
 
     def test_short_vehicle_track_is_marked_for_review(self):
         events = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 13))])  # 12 < 15 frames
@@ -134,6 +296,25 @@ class ImageRule(unittest.TestCase):
         self.assertTrue(events[0].needs_review)
         full = run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
         self.assertFalse(full[0].needs_review)
+
+    def test_one_vehicle_tracked_twice_reports_once(self):
+        # ByteTrack keeps a second id for an object it already tracks; both boxes sit on the same car.
+        events = run([track(1, "person", PED_ON, range(1, 31)),
+                      track(10, "car", CAR_ON, range(1, 31)),
+                      track(11, "car", (706, 502, 1006, 872), range(1, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+
+    def test_a_vehicle_that_gets_a_new_track_id_reports_once(self):
+        # the tracker drops the id and picks it up again while the car waits: boxes lined up across the gap
+        events = run([track(1, "person", PED_ON, range(1, 31)),
+                      track(10, "car", CAR_ON, range(1, 18)),
+                      track(11, "car", CAR_ON, range(21, 31))])
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 1)])
+
+    def test_two_different_vehicles_are_not_merged(self):
+        from yield_image_rule import vehicle_groups
+        left, right = track(10, "car", CAR_ON, range(1, 31)), track(11, "car", (1400, 500, 1700, 870), range(1, 31))
+        self.assertEqual(vehicle_groups([left, right], P), {10: 10, 11: 11})
 
 
 class ImageRuleInCrosswalkSpace(ImageRule):
@@ -146,6 +327,13 @@ class ImageRuleInCrosswalkSpace(ImageRule):
     def tearDown(self):
         global P
         P = self._saved
+
+    # These pin the image geometry's depth threshold (min_inside_person_heights) to the pixel; crosswalk coordinates use
+    # cw_on_margin instead, so the shelf they guard does not exist here.
+    _image_threshold_only = unittest.skip("pins the image geometry's depth threshold, which crosswalk coordinates do not use")
+    test_foot_just_past_the_depth_threshold_counts_as_crossing = _image_threshold_only(ImageRule.test_foot_just_past_the_depth_threshold_counts_as_crossing)
+    test_foot_just_short_of_the_depth_threshold_is_waiting = _image_threshold_only(ImageRule.test_foot_just_short_of_the_depth_threshold_is_waiting)
+    test_foot_exactly_at_the_depth_threshold_counts_as_crossing = _image_threshold_only(ImageRule.test_foot_exactly_at_the_depth_threshold_counts_as_crossing)
 
 
 # perspective crosswalk (mask px): far edge row 200 from x=150..450, near edge row 300 from x=20..600
@@ -191,7 +379,7 @@ class CrosswalkGeometry(unittest.TestCase):
         tracks = [track(1, "person", walker, range(1, 31)), track(10, "bus", bus, range(1, 31))]
         events = run(tracks, mask=strip.astype(bool), params=self.P)
         self.assertEqual([e.pedestrian_state for e in events], ["on_crosswalk"])
-        self.assertEqual(run(tracks, mask=strip.astype(bool), params=replace(self.P, geometry="image")), [])
+        # (the image geometry missed this at the old 0.1 depth threshold; at 0.03 its 4/76 = 0.053 counts too)
 
     def test_a_small_piece_cut_by_the_image_edge_does_not_claim_people_and_cars_far_along_its_extension(self):
         # coordinates taken from the real 紅燈 clip (frame 52): a right-edge piece, a pedestrian and small cars ~200 px away

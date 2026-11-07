@@ -10,7 +10,7 @@ param(
     [int]$ImgSz = 1280,
     [string]$Geometry = "image",   # image = 像素判斷(舊); crosswalk = 斑馬線座標判斷
     [ValidateSet("review", "strict")]
-    [string]$Mode = "review",      # review = 檢舉輔助,路緣等待者也列為候選(寧可多報); strict = 只報已上斑馬線
+    [string]$Mode = "strict",      # strict = 只報上了斑馬線的行人(預設); review = 路緣等待者也列為候選,候選多很多
     [string[]]$Only = @(),         # 只處理檔名含這些字串的影片
     [switch]$ReuseTracks  # 追蹤結果已存在就不重跑偵測,只重跑規則與疊圖
 )

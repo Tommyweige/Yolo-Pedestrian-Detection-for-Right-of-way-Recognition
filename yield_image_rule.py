@@ -4,9 +4,17 @@ No camera calibration, speed or stabilisation: works with a moving camera. Input
 (from scripts/segment_crosswalk.py) plus person/vehicle boxes with track ids (scripts/track_video.py raw tracks).
 A vehicle "yielding" never enters the crosswalk while a pedestrian is there, so yielding simply produces no event.
 A pedestrian merely waiting at the edge does not count (user decision). A pedestrian counts when they are on the crosswalk
-(foot at least min_inside_person_heights inside the mask) at some frame within entry_window_s of the contact, so stepping on
-as the vehicle passes is caught while standing still at the edge is not. This uses frames after the contact: offline only.
+(foot at least min_inside_person_heights inside the mask) at some frame of the contact, from its start to entry_window_s after
+it ends, so stepping on as the vehicle passes is caught while standing still at the edge is not. Judging the whole contact
+(rather than a window around its start) matters because a slow or late-stepping pedestrian reaches the mask after the
+vehicle's first frame on it. The reported time is then the frame the pedestrian is on the crosswalk, which is what a human
+labeller marks; contact_frames keeps the whole span. This uses frames after the contact: offline only.
 --include-waiting disables that filter; each event records the pedestrian state at contact and whether they entered.
+How contacts become events is a parameter: by default the candidate list (every (vehicle, pedestrian) contact, repeats of
+one pedestrian inside a pass merged by `contact_dedup`, default "pair"), or with `report_every_contact=False` one event per
+vehicle (its earliest qualifying pedestrian), which `--one-event-per-vehicle` selects. Both are scored by the same
+scripts/eval_rule_events.py, so the two constructions can be compared on one table, but their event counts are not
+comparable to each other (docs/yield-image-rule.md).
 Output is a candidate for review, not a legal finding.
 """
 import argparse
@@ -32,10 +40,21 @@ class Params:
     min_component_fraction: float = 0.005   # smaller crosswalk blobs are noise or far away
     close_px: int = 15                      # bridges gaps cut by vehicles/pedestrians (mask pixels)
     edge_margin_person_heights: float = 0.8 # a pedestrian this close to the crosswalk is "waiting at the edge"
-    lateral_vehicle_widths: float = 1.5     # pedestrian-to-vehicle gap along the crosswalk axis, in vehicle extents
+    lateral_vehicle_widths: float = 3.0     # pedestrian-to-vehicle gap along the crosswalk axis, in vehicle extents
+                                            # (the law is ~3 m / one lane; 1.5 vehicle widths missed motorcycles entirely)
     min_seconds: float = 0.2                # condition must hold this long
-    rider_overlap: float = 0.5              # person box this much inside a motorcycle box = rider, not a pedestrian
+    rider_margin: float = 0.15              # a rider's box jitters; inflate the motorcycle box by this share of person height
+    rider_overlap: float = 0.5              # person box this much inside the inflated motorcycle box = riding on that frame
+    rider_gap_s: float = 0.25               # a tracker dropout between two riding frames this short is still the ride
+    rider_min_frames: int = 5               # ... over at least this many frames, or the person was never on the bike
     rider_kinds: tuple = ("motorcycle",)    # cars/buses/trucks hide their occupants, so a person overlapping them is a pedestrian
+    rider_exclusion: bool = True            # off reproduces the pre-fix rule, so the evaluation can measure what it changed
+    same_vehicle_iou: float = 0.45          # two vehicle tracks this aligned are one vehicle: on the labelled clips
+                                            # the duplicates sit at median IoU 0.32-0.70. Lowering the bar to 0.30 merged
+                                            # every duplicate but also two different vehicles, costing two confirmed
+                                            # labels and one incident, so the bar stays where it does not.
+    same_vehicle_gap_s: float = 0.5         # ... when the second track starts within this long of the first ending
+    merge_duplicates: bool = True           # off reproduces the pre-fix rule, so the evaluation can measure what it changed
     band_fraction: float = 0.5              # share of the band below the vehicle that must be crosswalk
     wheel_line_fraction: float = 0.1        # the wheel line is the bottom of the box up to this fraction of its height
     flank_vehicle_widths: float = 0.5       # crosswalk beside the vehicle, this many vehicle widths on each side
@@ -43,10 +62,36 @@ class Params:
     foot_window_person_heights: float = 0.3  # half-width of the window around the foot that must be crosswalk
     foot_surround_fraction: float = 0.75     # ... at least this share of it, to count as standing on the crosswalk
     min_track_frames: int = 15
-    min_inside_person_heights: float = 0.1   # foot must be this deep inside the mask: mask edges are noisy, and a person
-                                             # standing right at the edge is waiting (chosen between the two clips' cases 0.03 and 0.25)
+    min_inside_person_heights: float = 0.03  # foot must be this deep inside the mask: mask edges are noisy, and a person
+                                             # standing right at the edge is waiting. 0.03 is chosen in-sample: on the 7
+                                             # labelled clips incidents go 11/15 at 0.05 and up (0.06 is already back at
+                                             # the 0.1 numbers) and 12/15 with one event per vehicle at 0.03-0.05, but the
+                                             # candidate-list construction (the default) gains its last withheld label and
+                                             # incident only at 0.03 (8/9, 14/15 against 7/9, 13/15 at 0.04). 0.03 is the
+                                             # edge of that passing shelf, not its middle: one step further and recall falls
+                                             # off the cliff. It must be re-validated on clips that were not tuned on.
+    report_every_contact: bool = True       # True (default): the candidate list - every (vehicle, pedestrian) contact,
+                                            # repeats of one pedestrian inside the vehicle's pass merged by `contact_dedup`.
+                                            # A vehicle that obstructs two pedestrians in one pass reports both, because
+                                            # the pass collapse cannot know which of them a labeller marked (clip 5 in
+                                            # docs/yield-image-rule.md); the cost is more reports per clip (4.4 -> 7.1 on
+                                            # the labelled clips) and the duplicate reports are expected output.
+                                            # False: one event per vehicle (its earliest qualifying pedestrian), the old
+                                            # construction, kept as the low-noise mode (`--one-event-per-vehicle`) and as the
+                                            # comparison row in scripts/eval_constructions.py.
+    contact_dedup_s: float = 1.25           # candidate list only, one pass = a vehicle's contacts chained by report time within
+                                            # this window (the evaluation's tolerance, so both constructions are scored alike).
+                                            # 0 keeps every contact, which is how the raw candidate count is measured.
+    contact_dedup: str = "pair"             # candidate list only, which contact of a pass is reported: "pair" (the default:
+                                            # only repeats of the same (vehicle, pedestrian) pair collapse, so two
+                                            # pedestrians of one pass are two reports), "earliest" (the pass's first
+                                            # contact) or "on_crosswalk_longest" (the pedestrian already standing on the
+                                            # crosswalk for the longest catch, falling back to the first contact). All
+                                            # three are measured in docs/yield-image-rule.md: "earliest" and
+                                            # "on_crosswalk_longest" score the same and drop a labelled crossing, "pair"
+                                            # recovers it at the price of one report per pedestrian of a pass.
     require_crossing: bool = True           # user decision: a pedestrian merely waiting at the edge does not count
-    entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk within this window of the contact does
+    entry_window_s: float = 1.0             # ... but one who steps onto the crosswalk during the contact (or this long after it) does
     evidence_s: float = 3.0
     geometry: str = "image"                  # "image": pixel strips and person heights; "crosswalk": coordinates of the fitted crosswalk
     cw_on_margin: float = 0.05               # a foot this deep (crosswalk widths) inside either long edge is on it: the image rule's
@@ -96,14 +141,155 @@ def scaled(box, sx, sy):
     return (box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy)
 
 
-def is_rider(person, vehicles, params):
-    px1, py1, px2, py2 = person
-    area = max(1e-6, (px2 - px1) * (py2 - py1))
-    for vx1, vy1, vx2, vy2 in vehicles:
-        iw, ih = min(px2, vx2) - max(px1, vx1), min(py2, vy2) - max(py1, vy1)
-        if iw > 0 and ih > 0 and iw * ih / area >= params.rider_overlap:
-            return True
-    return False
+def is_rider(person, vehicle, params):
+    """True when the person box is inside this vehicle box once the box is inflated by the tracker's jitter."""
+    margin = params.rider_margin * (person[3] - person[1])
+    inflated = (vehicle[0] - margin, vehicle[1] - margin, vehicle[2] + margin, vehicle[3] + margin)
+    return covered(person, inflated) >= params.rider_overlap
+
+
+def covered(box, region):
+    """Share of `box` that lies inside `region`."""
+    iw = min(box[2], region[2]) - max(box[0], region[0])
+    ih = min(box[3], region[3]) - max(box[1], region[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    return iw * ih / max(1e-6, (box[2] - box[0]) * (box[3] - box[1]))
+
+
+def rider_frames(tracks, params):
+    """{person id: frames on which that person is riding a motorcycle}.
+
+    Judged over time, not on each frame alone: a rider's box jitters in and out of the motorcycle's box, and judging
+    the frame alone let the rider count as a pedestrian on the frames it was out - the largest single source of
+    unreasonable events on the labelled clips. So a frame is a riding frame when the person's box sits `rider_overlap`
+    inside a motorcycle box inflated by `rider_margin` of the person's height, and a dropout between two riding frames
+    up to `rider_gap_s` apart is filled in (the tracker lost the box for a moment; the person did not get off). A
+    person needs `rider_min_frames` riding frames before any of this applies (someone brushing past a parked scooter in
+    fewer frames is not riding it).
+
+    The mask is per person and per moment - not per person, and not per (person, vehicle) pair. Someone sitting on a
+    scooter is not a pedestrian in front of any vehicle right then; the same person walking across the road three
+    seconds later is one. Judging the whole track at once hides that, and pairing the decision to one vehicle lets a
+    rider of a scooter be counted as a pedestrian in front of the car next to it, which is how this rule first read.
+    Buses, cars and trucks hide their occupants instead of being ridden, so only `rider_kinds` counts.
+    """
+    bikes = [t for t in tracks if t["kind"] in params.rider_kinds]
+    frames = {t["id"]: {int(b[0]): tuple(b[1:]) for b in t["boxes"]} for t in tracks}
+    gap = round(params.rider_gap_s * params.fps)
+    riding = {}
+    for person in tracks:
+        if person["kind"] != "person":
+            continue
+        mine = frames[person["id"]]
+        seats = set()
+        for bike in bikes:
+            theirs = frames[bike["id"]]
+            seats.update(f for f in mine if f in theirs and is_rider(mine[f], theirs[f], params))
+        seats = sorted(seats)
+        if len(seats) < params.rider_min_frames:
+            continue
+        filled = set(seats)                       # a dropout between two riding frames is still the same ride
+        for a, b in zip(seats, seats[1:]):
+            if b - a <= gap:
+                filled.update(range(a, b + 1))
+        riding[person["id"]] = filled
+    return riding
+
+
+def box_iou(a, b):
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    inter = iw * ih
+    return inter / max(1e-6, (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+
+
+def nearest_iou(a, b, frame):
+    """IoU of a's box at `frame` with b's box at the same frame or one frame either side (tracks flicker)."""
+    for g in (frame, frame - 1, frame + 1):
+        if g in b:
+            return box_iou(a[frame], b[g])
+    return 0.0
+
+
+def same_vehicle(a, b, params):
+    """True when two vehicle tracks are one physical vehicle, given their boxes ({frame: box}).
+
+    Two ways one vehicle ends up as two tracks: the tracker keeps a second ID for an object it already tracks
+    (the tracks coexist, and each frame's boxes sit on top of each other), or it drops the ID and picks up a new one
+    (the second track starts where the first ends, boxes lined up). Both are one vehicle, so one report, not two.
+    """
+    if not a or not b:
+        return False
+    fa, fb = (min(a), max(a)), (min(b), max(b))
+    shorter = min(len(a), len(b))
+    overlap = min(fa[1], fb[1]) - max(fa[0], fb[0])
+    if overlap >= max(3, 0.3 * shorter):
+        window = [f for f in a if max(fa[0], fb[0]) <= f <= min(fa[1], fb[1])]
+        if not window:
+            return False
+        matched = [f for f in window if nearest_iou(a, b, f) > 0]
+        if len(matched) < 0.6 * len(window):
+            return False
+        ious = sorted(nearest_iou(a, b, f) for f in matched)
+        return ious[len(ious) // 2] >= params.same_vehicle_iou
+    if overlap > 0.25 * shorter:
+        return False   # they see each other too long to be the same object, and too briefly to be a hand-off
+    gap = max(0, fb[0] - fa[1] if fb[0] > fa[1] else fa[0] - fb[1])
+    if gap > round(params.same_vehicle_gap_s * params.fps):
+        return False
+    shared = sorted(set(a) & set(b))
+    edges = [(f, f) for f in shared] or [(fa[1], fb[0])]
+    return any(f in a and g in b and box_iou(a[f], b[g]) >= params.same_vehicle_iou for f, g in edges)
+
+
+def vehicle_groups(tracks, params):
+    """{track id: group key} for the vehicle tracks that are one physical vehicle (everything else groups alone)."""
+    boxes = {t["id"]: {int(b[0]): tuple(b[1:]) for b in t["boxes"]} for t in tracks}
+    parent = {t["id"]: t["id"] for t in tracks}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    vehicles = [t for t in tracks if t["kind"] in VEHICLE_KINDS]
+    for i, a in enumerate(vehicles):
+        for b in vehicles[i + 1:]:
+            if a["kind"] != b["kind"] or find(a["id"]) == find(b["id"]):
+                continue
+            if same_vehicle(boxes[a["id"]], boxes[b["id"]], params):
+                parent[find(b["id"])] = find(a["id"])
+    return {t["id"]: find(t["id"]) for t in tracks}
+
+
+def merge_duplicate_tracks(tracks, params):
+    """One track per physical vehicle: merge tracks of the same kind that are one object (`same_vehicle`).
+
+    The merged track keeps the longest fragment's id and kind, and the boxes of every fragment (the longer fragment
+    wins on a shared frame). Without this the same car or motorcycle is reported twice.
+    """
+    groups = vehicle_groups(tracks, params)
+    members = {}
+    for t in tracks:
+        members.setdefault(groups[t["id"]], []).append(t)
+    merged = []
+    for group in members.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        longest = max(group, key=lambda t: len(t["boxes"]))
+        frames = {}
+        for member in sorted(group, key=lambda t: len(t["boxes"])):
+            for f, *b in member["boxes"]:
+                frames[int(f)] = b
+        merged.append({"id": longest["id"], "kind": longest["kind"],
+                       "boxes": [[f, *frames[f]] for f in sorted(frames)]})
+    return merged
+
 
 
 def person_state(box, component, distance, depth, params):
@@ -197,17 +383,19 @@ def scan_component_in_crosswalk(component, people, vehicles, params):
     return standing, pairs
 
 
-def scan_frame(mask, people, vehicles, params):
-    """Return ([(vehicle_id, person_id, state)], {person ids deep on a crosswalk}) for one frame. Boxes in mask pixels."""
+def scan_frame(mask, people, vehicles, params, riding=()):
+    """Return ([(vehicle_id, person_id, state)], {person ids deep on a crosswalk}) for one frame. Boxes in mask pixels.
+
+    `riding` is the set of person ids riding a motorcycle on this frame (`rider_frames`); someone riding is not a
+    pedestrian in front of anything.
+    """
     components = crosswalk_components(mask, params)
     if params.geometry == "crosswalk":
         components = merge_components(components)
-    vehicle_boxes = [b for _, k, b in vehicles if k in params.rider_kinds]  # a person inside a motorcycle box is a rider
     pairs, deep = [], set()
     for component in components:
         if params.geometry == "crosswalk":
-            found = scan_component_in_crosswalk(component, [(i, b) for i, b in people if not is_rider(b, vehicle_boxes, params)],
-                                                vehicles, params)
+            found = scan_component_in_crosswalk(component, [(i, b) for i, b in people if i not in riding], vehicles, params)
             if found is not None:
                 standing, component_pairs = found
                 deep.update(i for i, _, state in standing if state == "on_crosswalk")
@@ -216,7 +404,7 @@ def scan_frame(mask, people, vehicles, params):
         distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
         depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
         standing = [(i, b, person_state(b, component, distance, depth, params)) for i, b in people
-                    if not is_rider(b, vehicle_boxes, params)]
+                    if i not in riding]
         standing = [s for s in standing if s[2]]
         deep.update(i for i, _, state in standing if state == "on_crosswalk")
         axis = crosswalk_axis(component)
@@ -239,7 +427,8 @@ class Event:
     vehicle_kind: str
     pedestrian_id: int
     pedestrian_state: str          # state in the first qualifying frame
-    pedestrian_entered_crosswalk: bool  # on the crosswalk at some frame within entry_window_s of the contact
+    pedestrian_entered_crosswalk: bool  # on the crosswalk at some frame of the contact
+    contact_frames: tuple          # first/last frame of the vehicle-pedestrian contact that qualified
     evidence_frames: tuple
     needs_review: bool
     review_reasons: list
@@ -249,11 +438,67 @@ class Event:
     def to_dict(self):
         record = asdict(self)
         record["evidence_frames"] = list(self.evidence_frames)
+        record["contact_frames"] = list(self.contact_frames)
         return record
+
+
+CONTACT_DEDUP_VARIANTS = ("earliest", "on_crosswalk_longest", "pair")
+
+
+def contact_passes(candidates, params):
+    """[[candidate event]]: one vehicle's contacts grouped into passes, a pass continuing while the next contact is within
+    `contact_dedup_s` of the previous one. Contacts of *different* vehicles never group, so a pass stays one vehicle's
+    crossing, and a slow crossing whose contacts chain past the window still counts as one pass."""
+    passes, current = [], {}
+    for event in sorted(candidates, key=lambda e: e.time_s):
+        group = current.get(event.vehicle_id)
+        if group is not None and event.time_s - group[-1].time_s <= params.contact_dedup_s:
+            group.append(event)
+        else:
+            group = [event]
+            passes.append(group)
+            current[event.vehicle_id] = group
+    return passes
+
+
+def contact_frames_duration(event):
+    return event.contact_frames[1] - event.contact_frames[0]
+
+
+def dedupe_contacts(candidates, params):
+    """The candidate list with repeats of one pedestrian inside a vehicle pass merged, by `params.contact_dedup` (see Params).
+
+    The default (`pair`) keeps one report per pedestrian of a pass: the earliest contact of a pass is not necessarily the one
+    the law or the labeller cares about, so a car crossing while someone waits at the edge and someone else is already
+    walking on the crosswalk reports both, and the two share the vehicle's pass. Duplicate reports of one physical vehicle
+    are the price of that, and they are expected (docs/yield-image-rule.md) - the duplicate count is only meaningful inside
+    one construction, because the other construction reports one event per vehicle by definition.
+    """
+    if params.contact_dedup not in CONTACT_DEDUP_VARIANTS:
+        raise ValueError(f"contact_dedup must be one of {CONTACT_DEDUP_VARIANTS}, not {params.contact_dedup!r}")
+    if params.contact_dedup_s <= 0:
+        return list(candidates)   # the raw candidate list
+    kept = []
+    for group in contact_passes(candidates, params):
+        if params.contact_dedup == "pair":
+            seen = set()
+            for event in group:            # one report per (vehicle, pedestrian) pair; pedestrians are not merged
+                if event.pedestrian_id not in seen:
+                    seen.add(event.pedestrian_id)
+                    kept.append(event)
+        elif params.contact_dedup == "on_crosswalk_longest":
+            on = [event for event in group if event.pedestrian_state == "on_crosswalk"]
+            kept.append(max(on, key=contact_frames_duration) if on else group[0])
+        else:
+            kept.append(group[0])
+    return sorted(kept, key=lambda e: e.time_s)
 
 
 def detect(mask_at, tracks, params, frames):
     """mask_at(frame) -> bool array; tracks: list of {"id","kind","boxes":[[frame,x1,y1,x2,y2],...]}."""
+    if params.merge_duplicates:                        # one vehicle per track, so it can be reported once
+        tracks = merge_duplicate_tracks(tracks, params)
+    riders = rider_frames(tracks, params) if params.rider_exclusion else {}  # a rider is not a pedestrian
     boxes = {}
     for t in tracks:
         for f, *b in t["boxes"]:
@@ -261,7 +506,7 @@ def detect(mask_at, tracks, params, frames):
     lengths = {t["id"]: len(t["boxes"]) for t in tracks}
     need = max(1, round(params.min_seconds * params.fps))
     window = round(params.entry_window_s * params.fps)
-    streak, started, candidates, done, deep_frames = {}, {}, [], set(), {}
+    streak, started, contacts, deep_frames, kinds = {}, {}, {}, {}, {}
     for f in frames:
         mask = mask_at(f)
         if mask is None:
@@ -270,8 +515,9 @@ def detect(mask_at, tracks, params, frames):
         here = boxes.get(f, [])
         people = [(i, scaled(b, sx, sy)) for i, k, b in here if k == "person"]
         vehicles = [(i, k, scaled(b, sx, sy)) for i, k, b in here if k in VEHICLE_KINDS]
-        kinds = {i: k for i, k, _ in vehicles}
-        pairs, deep = scan_frame(mask, people, vehicles, params)
+        kinds.update({i: k for i, k, _ in vehicles})
+        pairs, deep = scan_frame(mask, people, vehicles, params,
+                                 [pid for pid, seats in riders.items() if f in seats])
         for pid in deep:
             deep_frames.setdefault(pid, []).append(f)
         current = {}
@@ -279,31 +525,37 @@ def detect(mask_at, tracks, params, frames):
             current.setdefault((vid, pid), state)
         for pair in list(streak):
             if pair not in current:
-                del streak[pair]
+                del streak[pair], started[pair]
         for pair, state in current.items():
             streak[pair] = streak.get(pair, 0) + 1
             started.setdefault(pair, (f, state))
-            if streak[pair] >= need and pair not in done:  # one candidate per (vehicle, pedestrian); the crossing filter runs below
-                done.add(pair)
-                reasons = ["short_vehicle_track"] if lengths.get(pair[0], 0) < params.min_track_frames else []
-                candidates.append((started[pair][0], pair, kinds[pair[0]], started[pair][1], reasons))  # time = first frame of contact, not when min_seconds was met
-        for pair in [p for p in started if p not in streak]:
-            del started[pair]
-    events, reported = [], set()
-    entered_of = {id(c): any(abs(g - c[0]) <= window for g in deep_frames.get(c[1][1], [])) for c in candidates}
-    has_crossing = {c[1][0] for c in candidates if entered_of[id(c)]}
-    for c in sorted(candidates, key=lambda c: c[0]):
-        f, (vid, pid), kind, state, reasons = c
-        if vid in reported:
-            continue  # one event per vehicle: its earliest qualifying pedestrian
-        entered = entered_of[id(c)]
-        if not entered and (params.require_crossing or vid in has_crossing):
-            continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle; with the
-            # filter off, a vehicle that also met a crossing pedestrian reports that pair, not the waiting one)
-        reported.add(vid)
+            if streak[pair] == need:  # first frame at which the contact qualifies: open its span
+                contacts[(pair, started[pair][0])] = [started[pair][0], f, state]
+            elif streak[pair] > need:
+                contacts[(pair, started[pair][0])][1] = f
+    candidates = []
+    for (pair, _), (start, end, state) in sorted(contacts.items(), key=lambda kv: kv[0][1]):
+        vid, pid = pair
+        entered_at = [g for g in deep_frames.get(pid, []) if start - window <= g <= end + window]
+        if params.require_crossing and not entered_at:
+            continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle)
+        frame = max(start, min(entered_at)) if entered_at else start
         span = round(params.evidence_s * params.fps)
-        events.append(Event("vehicle_on_crosswalk_with_pedestrian", f, round(f / params.fps, 3), vid, kind, pid, state,
-                            entered, (max(1, f - span), f + span), bool(reasons), reasons))
+        reasons = ["short_vehicle_track"] if lengths.get(vid, 0) < params.min_track_frames else []
+        candidates.append(Event("vehicle_on_crosswalk_with_pedestrian", frame, round(frame / params.fps, 3), vid,
+                                kinds[vid], pid, state, bool(entered_at), (start, end),
+                                (max(1, frame - span), frame + span), bool(reasons), reasons))
+    if params.report_every_contact:
+        return dedupe_contacts(candidates, params)
+    events, reported = [], set()
+    has_crossing = {e.vehicle_id for e in candidates if e.pedestrian_entered_crosswalk}
+    for event in candidates:  # contact-start order, so this is the vehicle's earliest qualifying pedestrian
+        if event.vehicle_id in reported:
+            continue  # one event per vehicle
+        if not event.pedestrian_entered_crosswalk and event.vehicle_id in has_crossing:
+            continue  # crossing filter off: a vehicle that also met a crossing pedestrian reports that pair, not the waiting one
+        reported.add(event.vehicle_id)
+        events.append(event)
     return events
 
 
@@ -327,6 +579,11 @@ def main(argv=None):
     parser.add_argument("--output", required=True, help="events .jsonl")
     parser.add_argument("--include-waiting", action="store_true", help="also report pedestrians who only waited at the edge (disables the crossing filter)")
     parser.add_argument("--geometry", choices=("image", "crosswalk"), default="image", help="judge in image pixels (default) or in crosswalk coordinates")
+    parser.add_argument("--one-event-per-vehicle", action="store_true",
+                        help="low-noise mode: one event per vehicle (its earliest qualifying pedestrian) instead of the "
+                             "candidate list that reports every contact; fewer reports, drops the second pedestrian of a pass")
+    parser.add_argument("--contact-dedup", choices=CONTACT_DEDUP_VARIANTS, default=Params.contact_dedup,
+                        help="which contact of a vehicle's pass is reported (candidate list only, default: %(default)s)")
     parser.add_argument("--video", help="source video: its fps and size are read from it (time_s and all thresholds depend on them)")
     parser.add_argument("--fps", type=float, help="required unless --video is given")
     parser.add_argument("--width", type=int, help="required unless --video is given")
@@ -341,7 +598,10 @@ def main(argv=None):
         print("Give --video, or all of --fps --width --height (a wrong fps silently shifts every event time)", file=sys.stderr)
         return 2
     params = Params(fps=fps, src_size=(width, height),
-                    require_crossing=not args.include_waiting, geometry=args.geometry)
+                    require_crossing=not args.include_waiting,
+                    report_every_contact=not args.one_event_per_vehicle,
+                    contact_dedup=args.contact_dedup,
+                    geometry=args.geometry)
     mask_at, _ = load_mask_provider(args.masks)
     tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
     last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)

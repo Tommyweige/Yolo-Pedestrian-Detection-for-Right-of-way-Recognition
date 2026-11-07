@@ -35,7 +35,7 @@ def _plan(video: Path, args, root: Path, environ):
     events = root / "datasets" / run / "events" / f"{stem}.jsonl"
     overlay = root / "datasets" / run / "overlay" / f"{stem}.mp4"
     evidence = root / "datasets" / run / "evidence" / stem
-    mode = getattr(args, "mode", "review")
+    mode = getattr(args, "mode", "strict")
 
     modern = _python(environ, "TRAFFIC_MODERN_PYTHON")
     labeling = _python(environ, "TRAFFIC_LABELING_PYTHON")
@@ -98,7 +98,7 @@ def _plan(video: Path, args, root: Path, environ):
         ]
         steps.append((2, "偵測與追蹤", track))
 
-    rule_label = "檢舉輔助：含路緣等待者" if mode == "review" else "嚴格：只報已上斑馬線"
+    rule_label = "含路緣等待者" if mode == "review" else "只報上了斑馬線的行人"
     steps.append(
         (
             3,
@@ -208,8 +208,8 @@ def _parse_args(argv=None):
     parser.add_argument(
         "--mode",
         choices=("review", "strict"),
-        default="review",
-        help="review（預設，檢舉輔助：路緣等待者也列為候選，寧可多報）或 strict（只報行人已上斑馬線）",
+        default="strict",
+        help="strict（預設：只報上了斑馬線的行人）或 review（路緣等待者也列為候選；多找到很少，候選多很多）",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)

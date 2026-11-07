@@ -4,6 +4,7 @@ mod video;
 use eframe::egui;
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -167,6 +168,11 @@ struct Desktop {
     status: String,
     error: Option<String>,
     logs: String,
+    events: Vec<Event>,
+    /// Which event rows are expanded to show every pedestrian; keyed by EventGroup::key.
+    expanded: HashSet<String>,
+    /// The right-hand column shows the event list instead of the settings; a run switches it over with its first event.
+    events_tab: bool,
     screenshot: Option<PathBuf>,
     screenshot_requested: bool,
     check_playback: bool,
@@ -211,6 +217,9 @@ impl Default for Desktop {
             status: "選擇影片與輸出資料夾即可開始。".into(),
             error: None,
             logs: String::new(),
+            events: Vec::new(),
+            expanded: HashSet::new(),
+            events_tab: false,
             screenshot: std::env::var_os("TRAFFIC_SCREENSHOT").map(PathBuf::from),
             screenshot_requested: false,
             check_playback: false,
@@ -387,6 +396,155 @@ fn timestamp(frame: u64, fps: f64) -> String {
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
 
+/// One 不禮讓 event from the image rule, as the Python side reports it.
+#[derive(Clone, Debug)]
+struct Event {
+    video: PathBuf,
+    video_name: String,
+    frame: u64,
+    time_s: f64,
+    vehicle_kind: String,
+    vehicle_id: i64,
+    pedestrian_id: i64,
+    pedestrian: String,
+    needs_review: bool,
+}
+
+impl Event {
+    /// Read one `{"type": "event", ...}` line; a malformed one is reported as a log line instead.
+    fn from_protocol(value: &Value) -> Option<Self> {
+        let video = PathBuf::from(value.get("video")?.as_str()?);
+        let time_s = value.get("time_s")?.as_f64()?;
+        let frame = value.get("frame")?.as_u64()?;
+        let kind = value.get("vehicle_kind").and_then(Value::as_str).unwrap_or("");
+        let vehicle_id = value.get("vehicle_id").and_then(Value::as_i64).unwrap_or_default();
+        let pedestrian_id = value.get("pedestrian_id").and_then(Value::as_i64).unwrap_or_default();
+        let state = match value.get("pedestrian_state").and_then(Value::as_str) {
+            Some("on_crosswalk") => "在斑馬線上",
+            Some("waiting_at_edge") => "在路邊等",
+            _ => "狀態未知",
+        };
+        let entered = value
+            .get("pedestrian_entered_crosswalk")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let pedestrian = if entered {
+            format!("行人 #{pedestrian_id} {state}（踏上斑馬線）")
+        } else {
+            format!("行人 #{pedestrian_id} {state}")
+        };
+        Some(Self {
+            video_name: value
+                .get("video_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| path_name(&video)),
+            video,
+            frame,
+            time_s,
+            vehicle_kind: kind.to_owned(),
+            vehicle_id,
+            pedestrian_id,
+            pedestrian,
+            needs_review: value
+                .get("needs_review")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
+
+    fn clock(&self) -> String {
+        clock(self.time_s)
+    }
+
+    fn vehicle(&self) -> String {
+        format!("{} #{}", self.vehicle_kind, self.vehicle_id)
+    }
+
+    /// The frame to show: the rule counts frames from one, the player from zero.
+    fn player_frame(&self) -> u64 {
+        self.frame.saturating_sub(1)
+    }
+}
+
+/// A vehicle's events fold into one row when they are this close in time.
+///
+/// The rule already merges repeats of one (vehicle, pedestrian) pair inside a 1.25 s pass, so what is left is a
+/// different pedestrian met by the same pass, and a pass over a crosswalk takes a few seconds. At 5 s one row is still
+/// one crossing: a car at 30 km/h covers about 40 m in that time, less than a junction, while the same car coming back
+/// a junction later is tens of seconds away and stays a separate row.
+const GROUP_WINDOW_S: f64 = 5.0;
+
+const CLOCK_WIDTH: f32 = 140.0;
+
+/// One row of the event list: one vehicle at one crossing, with every pedestrian it was reported against.
+#[derive(Clone, Debug)]
+struct EventGroup {
+    video: PathBuf,
+    video_name: String,
+    vehicle_kind: String,
+    vehicle_id: i64,
+    events: Vec<Event>,
+}
+
+impl EventGroup {
+    fn key(&self) -> String {
+        format!("{}|{}|{}", self.video.display(), self.vehicle_kind, self.vehicle_id)
+    }
+
+    fn first(&self) -> &Event {
+        &self.events[0]
+    }
+
+    fn vehicle(&self) -> String {
+        format!("{} #{}", self.vehicle_kind, self.vehicle_id)
+    }
+
+    fn needs_review(&self) -> bool {
+        self.events.iter().any(|event| event.needs_review)
+    }
+
+    /// How many different pedestrians this vehicle was reported against; one person met three times is one.
+    fn pedestrians(&self) -> usize {
+        let mut ids: Vec<i64> = self.events.iter().map(|event| event.pedestrian_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
+    }
+}
+
+/// The candidate list reports every (vehicle, pedestrian) contact, so one pass can arrive as several events. Fold the
+/// events of one vehicle whose times chain within GROUP_WINDOW_S into one row; the data keeps every report.
+fn group_events(events: &[Event]) -> Vec<EventGroup> {
+    let mut groups: Vec<EventGroup> = Vec::new();
+    for event in events {
+        let same_vehicle = groups.iter_mut().rev().find(|group| {
+            group.video == event.video
+                && group.vehicle_kind == event.vehicle_kind
+                && group.vehicle_id == event.vehicle_id
+                && event.time_s - group.events.last().map_or(f64::MAX, |last| last.time_s)
+                    <= GROUP_WINDOW_S
+        });
+        match same_vehicle {
+            Some(group) => group.events.push(event.clone()),
+            None => groups.push(EventGroup {
+                video: event.video.clone(),
+                video_name: event.video_name.clone(),
+                vehicle_kind: event.vehicle_kind.clone(),
+                vehicle_id: event.vehicle_id,
+                events: vec![event.clone()],
+            }),
+        }
+    }
+    groups
+}
+
+fn clock(time_s: f64) -> String {
+    let minutes = (time_s / 60.0).floor();
+    let seconds = time_s - minutes * 60.0;
+    format!("{:02}:{:06.3}", minutes as u64, seconds)
+}
+
 fn section_label(ui: &mut egui::Ui, text: &str, palette: Palette) {
     ui.label(egui::RichText::new(text).size(12.0).color(palette.muted));
 }
@@ -444,9 +602,6 @@ impl Desktop {
         let busy = self.detection.is_some();
         card(palette).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new("分析設定").size(18.0).strong());
-            section_label(ui, "設定本次影片的處理方式", palette);
-            ui.add_space(8.0);
             ui.add_enabled_ui(!busy, |ui| {
                 section_label(ui, "偵測模式", palette);
                 for (index, title, description) in [
@@ -507,16 +662,21 @@ impl Desktop {
                     }
                 }
                 ui.add_space(6.0);
-                section_label(ui, "模型", palette);
-                let labels = ["YOLOv8s  ·  輕量", "YOLOv8l  ·  標準", "YOLOv8x6  ·  大型"];
-                egui::ComboBox::from_id_salt("model")
-                    .width(ui.available_width() - 28.0)
-                    .selected_text(labels[self.model])
-                    .show_ui(ui, |ui| {
-                        for (index, label) in labels.iter().enumerate() {
-                            ui.selectable_value(&mut self.model, index, *label);
-                        }
-                    });
+                if self.task == 0 {
+                    section_label(ui, "模型", palette);
+                    let labels = ["YOLOv8s  ·  輕量", "YOLOv8l  ·  標準", "YOLOv8x6  ·  大型"];
+                    egui::ComboBox::from_id_salt("model")
+                        .width(ui.available_width() - 28.0)
+                        .selected_text(labels[self.model])
+                        .show_ui(ui, |ui| {
+                            for (index, label) in labels.iter().enumerate() {
+                                ui.selectable_value(&mut self.model, index, *label);
+                            }
+                        });
+                } else {
+                    section_label(ui, "模型", palette);
+                    section_label(ui, "YOLO26n 偵測器 ＋ 斑馬線分割模型", palette);
+                }
                 ui.add_space(6.0);
                 section_label(ui, "輸出位置", palette);
                 if ui
@@ -549,74 +709,198 @@ impl Desktop {
                     );
                 }
             });
-            ui.add_space(8.0);
-            if busy {
+            ui.add_space(4.0);
+            ui.collapsing("完整路徑與執行記錄", |ui| {
+                for path in &self.videos {
+                    ui.label(path.display().to_string());
+                }
+                if let Some(path) = &self.output {
+                    ui.label(format!("輸出：{}", path.display()));
+                }
+                if !self.logs.is_empty() {
+                    ui.label(&self.logs);
+                }
+            });
+        });
+    }
+
+    /// Start or cancel, pinned with the progress under either tab: at 1280x800 the settings above would otherwise push
+    /// the button below the window edge.
+    fn run_controls(&mut self, ui: &mut egui::Ui, palette: Palette) {
+        if self.detection.is_some() {
+            if ui
+                .add_sized([ui.available_width(), 40.0], egui::Button::new("取消分析"))
+                .clicked()
+            {
+                if let Some(worker) = &mut self.detection
+                    && let Err(error) = worker.send(json!({"cancel": true}))
+                {
+                    self.error = Some(error);
+                }
+                self.status = "正在取消；旋轉轉檔完成後會停止。".into();
+            }
+        } else {
+            let ready = !self.videos.is_empty() && self.output.is_some() && self.picker.is_none();
+            if primary_button(ui, "開始分析", ready, palette).clicked() {
+                self.start_detection(self.selected_task());
+            }
+            if !ready {
+                section_label(ui, "先匯入影片並選擇輸出資料夾", palette);
+            }
+        }
+    }
+
+    /// Progress stays pinned under either tab of the right-hand column, so a run can be watched while its events are
+    /// being read.
+    fn progress_panel(&self, ui: &mut egui::Ui, palette: Palette) {
+        card(palette).inner_margin(14).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            if self.detection.is_some() {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label("正在分析影片");
                 });
-                if ui
-                    .add_sized([ui.available_width(), 40.0], egui::Button::new("取消分析"))
-                    .clicked()
-                {
-                    if let Some(worker) = &mut self.detection
-                        && let Err(error) = worker.send(json!({"cancel": true}))
-                    {
-                        self.error = Some(error);
-                    }
-                    self.status = "正在取消；旋轉轉檔完成後會停止。".into();
-                }
-            } else {
-                let ready =
-                    !self.videos.is_empty() && self.output.is_some() && self.picker.is_none();
-                if primary_button(ui, "開始分析", ready, palette).clicked() {
-                    self.start_detection(if self.task == 0 { "tf" } else { "zebra" });
-                }
-                if !ready {
-                    section_label(ui, "先匯入影片並選擇輸出資料夾", palette);
-                }
             }
-        });
-        ui.add_space(8.0);
-        card(palette).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new("處理進度").size(16.0).strong());
-            ui.add_space(4.0);
             progress(ui, "當前影片", self.single_progress, palette);
-            ui.add_space(4.0);
             progress(ui, "整體批次", self.batch_progress, palette);
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(&self.status)
-                    .size(12.0)
-                    .color(palette.muted),
-            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&self.status)
+                        .size(12.0)
+                        .color(palette.muted),
+                )
+                .truncate(),
+            )
+            .on_hover_text(&self.status);
         });
     }
 
+    /// The event list fills the right-hand column on its own scroll: opening a row only lengthens this list, the player
+    /// in the central column keeps its size.
+    fn event_list(&mut self, ui: &mut egui::Ui, palette: Palette) {
+        if self.events.is_empty() {
+            section_label(
+                ui,
+                "完成「未禮讓行人」分析後，事件會列在這裡；點時間即跳到該影格。",
+                palette,
+            );
+            return;
+        }
+        let groups = group_events(&self.events);
+        let mut jump = None;
+        let mut toggled = None;
+        section_label(
+            ui,
+            &format!(
+                "{} 件 · {} 列 · 點時間跳到該影格 · 僅供輔助判斷",
+                self.events.len(),
+                groups.len()
+            ),
+            palette,
+        );
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .id_salt("yield_events")
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.spacing_mut().interact_size.y = 30.0;
+                ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
+                let mut last_video = None;
+                for group in &groups {
+                    // A batch can list several videos; the column is too narrow to repeat the file name on every row,
+                    // so it heads each run of rows from one video.
+                    if last_video != Some(&group.video) {
+                        last_video = Some(&group.video);
+                        ui.add_space(4.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&group.video_name)
+                                    .size(11.0)
+                                    .color(palette.muted),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(group.video.display().to_string());
+                    }
+                    let key = group.key();
+                    let open = self.expanded.contains(&key);
+                    let shared = group.pedestrians();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::Button::selectable(false, group.first().clock()))
+                            .on_hover_text(format!("影格 {}", group.first().frame))
+                            .clicked()
+                        {
+                            jump = Some(group.first().clone());
+                        }
+                        if shared > 1 {
+                            // ▲▼ are in the CJK UI font; the smaller ▸▾ are not.
+                            let arrow = if open { "▲" } else { "▼" };
+                            if ui
+                                .add(egui::Button::selectable(
+                                    open,
+                                    format!("{arrow} {} · {} 位行人", group.vehicle(), shared),
+                                ))
+                                .on_hover_text(format!(
+                                    "展開這台車在同一段路口的 {} 位行人",
+                                    shared
+                                ))
+                                .clicked()
+                            {
+                                toggled = Some(key.clone());
+                            }
+                        } else {
+                            ui.add(
+                                egui::Label::new(format!(
+                                    "{} · {}",
+                                    group.vehicle(),
+                                    group.first().pedestrian
+                                ))
+                                .truncate(),
+                            );
+                        }
+                        if group.needs_review() {
+                            section_label(ui, "需複審", palette);
+                        }
+                    });
+                    if open {
+                        for event in &group.events {
+                            ui.horizontal(|ui| {
+                                ui.add_space(18.0);
+                                if ui
+                                    .add(egui::Button::selectable(false, event.clock()).small())
+                                    .on_hover_text(format!("影格 {}", event.frame))
+                                    .clicked()
+                                {
+                                    jump = Some(event.clone());
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&event.pedestrian).size(12.0),
+                                    )
+                                    .truncate(),
+                                );
+                            });
+                        }
+                    }
+                }
+            });
+        if let Some(key) = toggled {
+            self.toggle_group(key);
+        }
+        if let Some(event) = jump {
+            self.jump_to_event(&event);
+        }
+    }
+
+    /// The central column is the player and nothing else: a toolbar row (video queue and import), the video, and the
+    /// transport row pinned to the bottom. The video takes every point left between them, so nothing beside it can push
+    /// it off screen.
     fn workspace(&mut self, ui: &mut egui::Ui, palette: Palette) {
         let busy = self.detection.is_some();
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(if self.calibration {
-                        "旋轉校正"
-                    } else {
-                        "影片工作區"
-                    })
-                    .size(22.0)
-                    .strong(),
-                );
-                section_label(
-                    ui,
-                    if self.calibration {
-                        "調整拍攝角度，確認後套用到本次分析"
-                    } else {
-                        "預覽畫面，確認素材後開始分析"
-                    },
-                    palette,
-                );
-            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(!busy && self.picker.is_none(), |ui| {
                     if ui
@@ -637,251 +921,228 @@ impl Desktop {
                         );
                     }
                 });
+                if self.count > 0 {
+                    section_label(ui, &format!("{:.0} FPS", self.fps), palette);
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    self.video_picker(ui, palette, busy);
+                });
             });
         });
-        ui.add_space(10.0);
-        card(palette).inner_margin(16).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let width = ui.available_width();
-            let height = (width * 9.0 / 16.0).clamp(200.0, 340.0);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 10, palette.video);
-            if let Some(texture) = &self.texture {
-                let image = texture.size_vec2();
-                let angle = if self.calibration {
-                    -self.angle.to_radians()
-                } else {
-                    0.0
-                };
-                let rotation = egui::emath::Rot2::from_angle(angle);
-                let bounds = egui::vec2(
-                    image.x * angle.cos().abs() + image.y * angle.sin().abs(),
-                    image.x * angle.sin().abs() + image.y * angle.cos().abs(),
-                );
-                let scale = ((width - 24.0) / bounds.x).min((height - 24.0) / bounds.y);
-                let half = image * scale * 0.5;
-                let mut mesh = egui::Mesh::with_texture(texture.id());
-                for (position, uv) in [
-                    (-half, egui::pos2(0.0, 0.0)),
-                    (egui::vec2(half.x, -half.y), egui::pos2(1.0, 0.0)),
-                    (half, egui::pos2(1.0, 1.0)),
-                    (egui::vec2(-half.x, half.y), egui::pos2(0.0, 1.0)),
-                ] {
-                    mesh.vertices.push(egui::epaint::Vertex {
-                        pos: rect.center() + rotation * position,
-                        uv,
-                        color: egui::Color32::WHITE,
+        if let Some(error) = &self.error {
+            let mut close = false;
+            egui::Frame::NONE
+                .fill(ui.visuals().error_fg_color.gamma_multiply(0.12))
+                .corner_radius(8)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new("需要處理")
+                                .strong()
+                                .color(ui.visuals().error_fg_color),
+                        );
+                        ui.label(error);
+                        close = ui.button("關閉錯誤訊息").clicked();
                     });
+                });
+            if close {
+                self.error = None;
+            }
+        }
+        egui::TopBottomPanel::bottom("player_controls")
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                left: 0,
+                right: 0,
+                top: 8,
+                bottom: 0,
+            }))
+            .show_separator_line(false)
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                self.transport(ui, palette, busy);
+                if self.calibration {
+                    ui.add_space(8.0);
+                    self.calibration_controls(ui, palette, busy);
                 }
-                mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-                ui.painter().add(egui::Shape::mesh(mesh));
+            });
+        let size = ui.available_size();
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let (width, height) = (rect.width(), rect.height());
+        ui.painter().rect_filled(rect, 10, palette.video);
+        if let Some(texture) = &self.texture {
+            let image = texture.size_vec2();
+            let angle = if self.calibration {
+                -self.angle.to_radians()
             } else {
-                let center = rect.center();
-                let color = egui::Color32::from_rgb(70, 111, 127);
-                for index in 0..4 {
-                    let x = center.x - 48.0 + index as f32 * 26.0;
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(x, center.y - 70.0),
-                            egui::vec2(15.0, 40.0),
-                        ),
-                        3,
-                        color,
-                    );
-                }
-                ui.painter().text(
-                    center + egui::vec2(0.0, 4.0),
-                    egui::Align2::CENTER_CENTER,
-                    "從一部影片開始",
-                    egui::FontId::proportional(21.0),
-                    egui::Color32::from_rgb(233, 241, 245),
-                );
-                ui.painter().text(
-                    center + egui::vec2(0.0, 38.0),
-                    egui::Align2::CENTER_CENTER,
-                    "支援 MP4、AVI 與 MKV",
-                    egui::FontId::proportional(13.0),
-                    egui::Color32::from_rgb(171, 194, 208),
+                0.0
+            };
+            let rotation = egui::emath::Rot2::from_angle(angle);
+            let bounds = egui::vec2(
+                image.x * angle.cos().abs() + image.y * angle.sin().abs(),
+                image.x * angle.sin().abs() + image.y * angle.cos().abs(),
+            );
+            let scale = ((width - 16.0) / bounds.x).min((height - 16.0) / bounds.y);
+            let half = image * scale * 0.5;
+            let mut mesh = egui::Mesh::with_texture(texture.id());
+            for (position, uv) in [
+                (-half, egui::pos2(0.0, 0.0)),
+                (egui::vec2(half.x, -half.y), egui::pos2(1.0, 0.0)),
+                (half, egui::pos2(1.0, 1.0)),
+                (egui::vec2(-half.x, half.y), egui::pos2(0.0, 1.0)),
+            ] {
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: rect.center() + rotation * position,
+                    uv,
+                    color: egui::Color32::WHITE,
+                });
+            }
+            mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+            ui.painter().add(egui::Shape::mesh(mesh));
+        } else {
+            let center = rect.center();
+            let color = egui::Color32::from_rgb(70, 111, 127);
+            for index in 0..4 {
+                let x = center.x - 48.0 + index as f32 * 26.0;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(x, center.y - 70.0), egui::vec2(15.0, 40.0)),
+                    3,
+                    color,
                 );
             }
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(
-                            self.preview_path
-                                .as_ref()
-                                .map(|p| path_name(p))
-                                .unwrap_or("尚未匯入影片".into()),
-                        )
-                        .strong(),
-                    )
-                    .truncate(),
-                )
+            ui.painter().text(
+                center + egui::vec2(0.0, 4.0),
+                egui::Align2::CENTER_CENTER,
+                "從一部影片開始",
+                egui::FontId::proportional(21.0),
+                egui::Color32::from_rgb(233, 241, 245),
+            );
+            ui.painter().text(
+                center + egui::vec2(0.0, 38.0),
+                egui::Align2::CENTER_CENTER,
+                "支援 MP4、AVI 與 MKV",
+                egui::FontId::proportional(13.0),
+                egui::Color32::from_rgb(171, 194, 208),
+            );
+        }
+    }
+
+    /// The video queue lives in the player's toolbar as a dropdown, so a long batch takes no height from the player.
+    fn video_picker(&mut self, ui: &mut egui::Ui, palette: Palette, busy: bool) {
+        let current = self
+            .preview_path
+            .as_ref()
+            .map(|p| path_name(p))
+            .unwrap_or("尚未匯入影片".into());
+        if self.calibration || self.videos.is_empty() {
+            ui.add(egui::Label::new(egui::RichText::new(current).strong()).truncate())
                 .on_hover_text(
                     self.preview_path
                         .as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_default(),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.count > 0 {
-                        section_label(ui, &format!("{:.0} FPS", self.fps), palette);
+            return;
+        }
+        section_label(ui, &format!("影片 {}", self.videos.len()), palette);
+        let mut selected = None;
+        ui.add_enabled_ui(!busy, |ui| {
+            egui::ComboBox::from_id_salt("video_queue")
+                .width(ui.available_width().max(120.0))
+                .truncate()
+                .selected_text(egui::RichText::new(current).strong())
+                .show_ui(ui, |ui| {
+                    for path in &self.videos {
+                        let previewing = self.preview_path.as_ref() == Some(path);
+                        if ui
+                            .selectable_label(previewing, path_name(path))
+                            .on_hover_text(path.display().to_string())
+                            .clicked()
+                        {
+                            selected = Some(path.clone());
+                        }
                     }
                 });
-            });
-            ui.add_enabled_ui(self.preview.is_some() && self.count > 0 && !busy, |ui| {
-                ui.scope(|ui| {
-                    ui.spacing_mut().slider_width = (ui.available_width() - 8.0).max(120.0);
-                    ui.spacing_mut().interact_size.y = 20.0;
-                    let response = ui
-                        .add(
-                            egui::Slider::new(&mut self.frame, 0..=self.count.saturating_sub(1))
-                                .show_value(false)
-                                .handle_shape(egui::style::HandleShape::Circle)
-                                .trailing_fill(true),
-                        )
-                        .on_hover_text("拖曳定位影格；也可使用方向鍵調整");
-                    self.scrubbing = response.dragged();
-                    if response.changed() {
-                        self.playing = false;
-                        self.dirty = true;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(if self.playing { "暫停" } else { "播放" })
-                                .min_size(egui::vec2(80.0, 36.0)),
-                        )
-                        .clicked()
-                    {
-                        self.playing = !self.playing;
-                        self.play_start_frame = self.frame;
-                        self.last_frame = Instant::now();
-                    }
-                    if ui.button("停止").clicked() {
-                        self.playing = false;
-                        self.frame = 0;
-                        self.dirty = true;
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}  /  {}",
-                                timestamp(self.frame, self.fps),
-                                timestamp(self.count, self.fps)
-                            ))
-                            .monospace()
-                            .size(12.0)
-                            .color(palette.muted),
-                        );
-                    });
-                });
+        });
+        if let Some(path) = selected {
+            self.open_preview(path);
+        }
+    }
+
+    fn transport(&mut self, ui: &mut egui::Ui, palette: Palette, busy: bool) {
+        ui.add_enabled_ui(self.preview.is_some() && self.count > 0 && !busy, |ui| {
+            ui.spacing_mut().interact_size.y = 28.0;
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(if self.playing { "暫停" } else { "播放" })
+                            .min_size(egui::vec2(76.0, 28.0)),
+                    )
+                    .clicked()
+                {
+                    self.playing = !self.playing;
+                    self.play_start_frame = self.frame;
+                    self.last_frame = Instant::now();
+                }
+                if ui.button("停止").clicked() {
+                    self.playing = false;
+                    self.frame = 0;
+                    self.dirty = true;
+                }
+                ui.spacing_mut().slider_width = (ui.available_width() - CLOCK_WIDTH).max(120.0);
+                let response = ui
+                    .add(
+                        egui::Slider::new(&mut self.frame, 0..=self.count.saturating_sub(1))
+                            .show_value(false)
+                            .handle_shape(egui::style::HandleShape::Circle)
+                            .trailing_fill(true),
+                    )
+                    .on_hover_text("拖曳定位影格；也可使用方向鍵調整");
+                self.scrubbing = response.dragged();
+                if response.changed() {
+                    self.playing = false;
+                    self.dirty = true;
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}  /  {}",
+                        timestamp(self.frame, self.fps),
+                        timestamp(self.count, self.fps)
+                    ))
+                    .monospace()
+                    .size(12.0)
+                    .color(palette.muted),
+                );
             });
         });
-        ui.add_space(10.0);
-        if self.calibration {
-            card(palette).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(egui::RichText::new("畫面角度").size(16.0).strong());
-                ui.add_enabled_ui(!busy, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(100.0);
-                        if ui
-                            .add(egui::Slider::new(&mut self.angle, -45.0..=45.0).suffix("°"))
-                            .changed()
-                        {
-                            self.playing = false;
-                            self.dirty = true;
-                        }
-                        if ui.button("重設").clicked() {
-                            self.angle = 0.0;
-                            self.dirty = true;
-                        }
-                    });
+    }
+
+    fn calibration_controls(&mut self, ui: &mut egui::Ui, palette: Palette, busy: bool) {
+        card(palette).inner_margin(14).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new("畫面角度").size(16.0).strong());
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width = (ui.available_width() - 150.0).max(100.0);
+                    if ui
+                        .add(egui::Slider::new(&mut self.angle, -45.0..=45.0).suffix("°"))
+                        .changed()
+                    {
+                        self.playing = false;
+                        self.dirty = true;
+                    }
+                    if ui.button("重設").clicked() {
+                        self.angle = 0.0;
+                        self.dirty = true;
+                    }
                     if ui.button("套用旋轉角度").clicked() {
                         self.applied_angle = self.angle;
                         self.status = format!("旋轉校正已套用：{:.0}°", self.angle);
                     }
                 });
-                ui.collapsing("參考影片資訊", |ui| {
-                    if let Some(path) = &self.preview_path {
-                        ui.label(path.display().to_string());
-                    }
-                    if !self.logs.is_empty() {
-                        ui.label(&self.logs);
-                    }
-                });
             });
-        } else {
-            card(palette).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("影片清單").size(16.0).strong());
-                    section_label(ui, &format!("{} 部影片", self.videos.len()), palette);
-                });
-                if self.videos.is_empty() {
-                    section_label(
-                        ui,
-                        "匯入一部或多部影片，偵測結果將存入指定資料夾。",
-                        palette,
-                    );
-                } else {
-                    let mut selected = None;
-                    egui::ScrollArea::vertical()
-                        .max_height(125.0)
-                        .id_salt("video_queue")
-                        .show(ui, |ui| {
-                            for path in &self.videos {
-                                ui.horizontal(|ui| {
-                                    let previewing = self.preview_path.as_ref() == Some(path);
-                                    if ui
-                                        .add_enabled(
-                                            !busy,
-                                            egui::Button::selectable(previewing, "預覽"),
-                                        )
-                                        .clicked()
-                                    {
-                                        selected = Some(path.clone());
-                                    }
-                                    ui.add(egui::Label::new(path_name(path)).truncate())
-                                        .on_hover_text(path.display().to_string());
-                                });
-                            }
-                        });
-                    if let Some(path) = selected {
-                        self.open_preview(path);
-                    }
-                }
-                ui.add_space(4.0);
-                ui.collapsing("完整路徑與執行記錄", |ui| {
-                    for path in &self.videos {
-                        ui.label(path.display().to_string());
-                    }
-                    if let Some(path) = &self.output {
-                        ui.label(format!("輸出：{}", path.display()));
-                    }
-                    if !self.logs.is_empty() {
-                        ui.label(&self.logs);
-                    }
-                });
-            });
-        }
-        if let Some(error) = &self.error {
-            ui.add_space(10.0);
-            card(palette).show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("需要處理")
-                        .strong()
-                        .color(ui.visuals().error_fg_color),
-                );
-                ui.label(error);
-            });
-            if ui.button("關閉錯誤訊息").clicked() {
-                self.error = None;
-            }
-        }
+        });
     }
 
     fn open_preview(&mut self, path: PathBuf) {
@@ -917,10 +1178,39 @@ impl Desktop {
                 self.single_progress = 0.0;
                 self.batch_progress = 0.0;
                 self.logs.clear();
+                self.events.clear();
                 self.status = "正在準備偵測…".into();
             }
             Err(error) => self.error = Some(error),
         }
+    }
+
+    /// What 開始分析 asks the backend for: 0 runs the legacy 闖紅燈 predictor, 1 the 不禮讓 image rule.
+    fn selected_task(&self) -> &'static str {
+        if self.task == 0 { "tf" } else { "yield" }
+    }
+
+    /// Open or close the per-pedestrian times of one row. A row is keyed by video and vehicle, so the same vehicle in
+    /// another video keeps its own state.
+    fn toggle_group(&mut self, key: String) {
+        if !self.expanded.remove(&key) {
+            self.expanded.insert(key);
+        }
+    }
+
+    /// Show the video and frame of one event; a batch can hold events from several videos.
+    fn jump_to_event(&mut self, event: &Event) {
+        if self.preview_path.as_ref() != Some(&event.video) {
+            self.open_preview(event.video.clone());
+        }
+        self.playing = false;
+        self.frame = if self.count > 0 {
+            event.player_frame().min(self.count - 1)
+        } else {
+            event.player_frame()
+        };
+        self.dirty = true;
+        self.status = format!("已跳到 {}（{}）", event.clock(), event.vehicle());
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
@@ -1012,8 +1302,29 @@ impl Desktop {
                     self.batch_progress = (index / self.videos.len().max(1) as f32).clamp(0.0, 1.0);
                     self.status = event["message"].as_str().unwrap_or("").into();
                 }
+                "event" => match Event::from_protocol(&event) {
+                    Some(parsed) => {
+                        self.status = format!("發現事件：{} {}", parsed.clock(), parsed.vehicle());
+                        if self.events.is_empty() {
+                            self.events_tab = true;
+                        }
+                        self.events.push(parsed);
+                    }
+                    None => self.append_log(&format!("無法解析事件：{event}")),
+                },
                 "done" => {
-                    self.status = "影片處理完成，請至輸出資料夾查看結果。".into();
+                    self.status = if self.task == 0 {
+                        "影片處理完成，請至輸出資料夾查看結果。".into()
+                    } else if self.events.is_empty() {
+                        "影片處理完成，沒有偵測到不禮讓事件。".into()
+                    } else {
+                        let rows = group_events(&self.events).len();
+                        format!(
+                            "影片處理完成：{} 件事件摺成 {} 列，點時間可跳到該影格。",
+                            self.events.len(),
+                            rows
+                        )
+                    };
                     self.single_progress = 1.0;
                     self.batch_progress = 1.0;
                     self.detection = None;
@@ -1057,7 +1368,7 @@ impl eframe::App for Desktop {
         self.poll(ctx);
         if self.check_detection && !self.detection_check_started && self.texture.is_some() {
             self.detection_check_started = true;
-            self.start_detection("zebra");
+            self.start_detection(self.selected_task());
         }
         if self.check_folder && self.texture.is_some() {
             if self.folder_updates == 0 {
@@ -1102,6 +1413,17 @@ impl eframe::App for Desktop {
                     std::fs::write(path.with_extension("json"), json!({
                         "batch_progress": self.batch_progress, "single_progress": self.single_progress,
                         "status": self.status, "error": self.error,
+                        "events": self.events.iter().map(|e| json!({
+                            "video": e.video, "frame": e.frame, "time_s": e.time_s,
+                            "vehicle": e.vehicle(), "pedestrian": e.pedestrian,
+                            "needs_review": e.needs_review
+                        })).collect::<Vec<_>>(),
+                        "rows": group_events(&self.events).iter().map(|group| json!({
+                            "vehicle": group.vehicle(), "events": group.events.len(),
+                            "pedestrians": group.pedestrians(),
+                            "times": group.events.iter().map(|e| e.time_s).collect::<Vec<_>>()
+                        })).collect::<Vec<_>>(),
+                        "expanded": self.expanded.iter().cloned().collect::<Vec<_>>(),
                         "elapsed_seconds": self.started.elapsed().as_secs_f64()
                     }).to_string()).expect("Save detection check");
                 }
@@ -1147,8 +1469,8 @@ impl eframe::App for Desktop {
                     .inner_margin(egui::Margin {
                         left: 28,
                         right: 28,
-                        top: 18,
-                        bottom: 18,
+                        top: 10,
+                        bottom: 10,
                     })
                     .stroke(egui::Stroke::new(1.0_f32, palette.border)),
             )
@@ -1197,32 +1519,95 @@ impl eframe::App for Desktop {
                     });
                 });
             });
-        egui::SidePanel::right("settings")
-            .exact_width(if ctx.content_rect().width() < 980.0 {
-                294.0
-            } else {
-                330.0
-            })
+        // Two columns side by side, so the event list and the player are never stacked against each other: a window
+        // is wider than tall, and stacking made each one take the other's height. The right-hand column switches
+        // between the settings and the events, with the progress pinned under both.
+        egui::SidePanel::right("side")
+            .exact_width((ctx.content_rect().width() * 0.3).clamp(300.0, 380.0))
             .resizable(false)
             .frame(
                 egui::Frame::NONE
                     .fill(palette.background)
                     .inner_margin(egui::Margin {
                         left: 0,
-                        right: 24,
-                        top: 24,
-                        bottom: 24,
+                        right: 20,
+                        top: 16,
+                        bottom: 16,
                     }),
             )
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.settings(ui, palette);
+                ui.columns(2, |columns| {
+                    let events = if self.events.is_empty() {
+                        "不禮讓事件".to_owned()
+                    } else {
+                        format!("不禮讓事件 {}", group_events(&self.events).len())
+                    };
+                    for (column, (value, title)) in
+                        [(false, "分析設定".to_owned()), (true, events)].into_iter().enumerate()
+                    {
+                        let ui = &mut columns[column];
+                        if ui
+                            .add(
+                                egui::Button::selectable(self.events_tab == value, title)
+                                    .min_size(egui::vec2(ui.available_width(), 34.0))
+                                    .corner_radius(8),
+                            )
+                            .clicked()
+                        {
+                            self.events_tab = value;
+                        }
+                    }
                 });
+                egui::TopBottomPanel::bottom("progress")
+                    .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                        left: 0,
+                        right: 0,
+                        top: 8,
+                        bottom: 0,
+                    }))
+                    .show_separator_line(false)
+                    .resizable(false)
+                    .show_inside(ui, |ui| self.progress_panel(ui, palette));
+                // On the events tab the list needs the height; start lives with the settings, cancel stays reachable.
+                if !self.events_tab || self.detection.is_some() {
+                    egui::TopBottomPanel::bottom("run_controls")
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                            left: 0,
+                            right: 0,
+                            top: 8,
+                            bottom: 0,
+                        }))
+                        .show_separator_line(false)
+                        .resizable(false)
+                        .show_inside(ui, |ui| self.run_controls(ui, palette));
+                }
+                ui.add_space(4.0);
+                if self.events_tab {
+                    card(palette).inner_margin(12).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_min_height(ui.available_height());
+                        self.event_list(ui, palette);
+                    });
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.settings(ui, palette);
+                    });
+                }
             });
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(palette.background).inner_margin(24))
+            .frame(
+                egui::Frame::NONE
+                    .fill(palette.background)
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 16,
+                        top: 16,
+                        bottom: 16,
+                    }),
+            )
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                card(palette).inner_margin(14).show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
                     self.workspace(ui, palette);
                 });
             });
@@ -1272,18 +1657,62 @@ impl eframe::App for Desktop {
     }
 }
 
+/// Harness: fill the list from a JSONL of protocol events, so a window shows a finished run without waiting for the
+/// pipeline. Capture-mode layout runs use it, and so does a plain window that is captured with PrintWindow while the
+/// machine has to stay hands-off: both draw the same screen a completed run leaves behind.
+fn seed_check_events(desktop: &mut Desktop) {
+    let Some(path) = std::env::var_os("TRAFFIC_CHECK_EVENTS") else {
+        return;
+    };
+    let text = std::fs::read_to_string(path).expect("Read check events");
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let value: Value = serde_json::from_str(line).expect("Check event JSON");
+        desktop
+            .events
+            .push(Event::from_protocol(&value).expect("Check event fields"));
+    }
+    desktop.status = format!("影片處理完成：{} 件事件。", desktop.events.len());
+    // The seeded list comes from a 不禮讓 run, so the mode under it says the same thing.
+    desktop.task = 1;
+    desktop.single_progress = 1.0;
+    desktop.batch_progress = 1.0;
+    desktop.detection_check_started = true;
+    desktop.events_tab = !desktop.events.is_empty();
+    // Open the rows of the vehicles named in TRAFFIC_CHECK_EXPANDED ("car #110;bus #167"), so the per-pedestrian
+    // times can be captured without clicking.
+    if let Ok(names) = std::env::var("TRAFFIC_CHECK_EXPANDED") {
+        let names: Vec<String> = names.split(';').map(|name| name.trim().to_owned()).collect();
+        for group in group_events(&desktop.events) {
+            if names.contains(&group.vehicle()) {
+                desktop.expanded.insert(group.key());
+            }
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let capturing = std::env::var_os("TRAFFIC_SCREENSHOT").is_some();
     let compact =
         capturing && std::env::var("TRAFFIC_SCREENSHOT_LAYOUT").as_deref() == Ok("compact");
+    // Harness only: the inner size in points, e.g. "1066x733" for the 1600x1100 window at 150% scaling.
+    let size = std::env::var("TRAFFIC_SCREENSHOT_SIZE")
+        .ok()
+        .and_then(|text| {
+            let (width, height) = text.split_once('x')?;
+            Some([width.trim().parse().ok()?, height.trim().parse().ok()?])
+        })
+        .unwrap_or(if compact {
+            [860.0, 640.0]
+        } else {
+            [1280.0, 880.0]
+        });
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size(if compact {
-                [860.0, 640.0]
-            } else {
-                [1280.0, 880.0]
-            })
-            .with_min_inner_size([860.0, 640.0]),
+            .with_inner_size(size)
+            .with_min_inner_size([860.0, 640.0])
+            // Harness: a window seeded with a finished run is captured with PrintWindow while the machine is in use,
+            // so it opens without taking the focus from whatever the user is doing.
+            .with_active(std::env::var_os("TRAFFIC_CHECK_EVENTS").is_none()),
         ..Default::default()
     };
     eframe::run_native(
@@ -1382,10 +1811,15 @@ fn main() -> eframe::Result {
                 }
                 apply_theme(&cc.egui_ctx, desktop.dark);
             }
+            seed_check_events(&mut desktop);
             if let Some(path) = std::env::var_os("TRAFFIC_PREVIEW_VIDEO") {
                 let path = PathBuf::from(path);
                 desktop.videos = vec![path.clone()];
                 desktop.open_preview(path);
+            }
+            // Harness: a preset output folder, so an end-to-end run does not need the folder dialog.
+            if let Some(path) = std::env::var_os("TRAFFIC_OUTPUT_DIR") {
+                desktop.output = Some(PathBuf::from(path));
             }
             Ok(Box::new(desktop))
         }),
@@ -1395,6 +1829,106 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
+
+    #[test]
+    fn event_line_becomes_a_list_entry() {
+        let line = json!({
+            "type": "event", "index": 0,
+            "video": "E:/videos/clip.mp4", "video_name": "clip.mp4",
+            "frame": 418, "time_s": 6.974,
+            "vehicle_kind": "car", "vehicle_id": 12,
+            "pedestrian_id": 3, "pedestrian_state": "on_crosswalk",
+            "pedestrian_entered_crosswalk": true, "needs_review": false
+        });
+        let event = Event::from_protocol(&line).expect("Protocol event should parse");
+        assert_eq!(event.clock(), "00:06.974");
+        assert_eq!(event.player_frame(), 417);
+        assert_eq!(event.vehicle(), "car #12");
+        assert!(event.pedestrian.contains("踏上斑馬線"));
+        assert!(Event::from_protocol(&json!({"type": "event"})).is_none());
+    }
+
+    fn event(frame: u64, time_s: f64, kind: &str, vehicle: i64, pedestrian: i64) -> Event {
+        Event {
+            video: PathBuf::from("clip.mp4"),
+            video_name: "clip.mp4".into(),
+            frame,
+            time_s,
+            vehicle_kind: kind.into(),
+            vehicle_id: vehicle,
+            pedestrian_id: pedestrian,
+            pedestrian: format!("行人 #{pedestrian}"),
+            needs_review: false,
+        }
+    }
+
+    #[test]
+    fn one_vehicle_inside_the_window_is_one_row() {
+        let events = vec![
+            event(100, 1.0, "car", 7, 1),
+            event(160, 2.5, "car", 7, 2),
+            event(220, 4.2, "car", 7, 3),
+        ];
+        let groups = group_events(&events);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].events.len(), 3);
+        assert_eq!(groups[0].pedestrians(), 3);
+        assert_eq!(groups[0].first().time_s, 1.0);
+    }
+
+    #[test]
+    fn one_person_met_three_times_counts_as_one_pedestrian() {
+        let events = vec![
+            event(732, 24.4, "truck", 415, 291),
+            event(773, 25.767, "truck", 415, 291),
+            event(815, 27.167, "truck", 415, 291),
+        ];
+        let groups = group_events(&events);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].events.len(), 3);
+        assert_eq!(groups[0].pedestrians(), 1);
+    }
+
+    #[test]
+    fn the_same_vehicle_far_apart_or_another_vehicle_stays_separate() {
+        let events = vec![
+            event(100, 1.0, "car", 7, 1),
+            event(400, 9.0, "car", 7, 2),   // 8 s later: a different pass, a separate row
+            event(420, 9.4, "car", 8, 3),   // another vehicle at the same time
+            event(440, 9.6, "motorcycle", 7, 4), // same id, different kind
+        ];
+        let groups = group_events(&events);
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().all(|group| group.events.len() == 1));
+    }
+
+    #[test]
+    fn clicking_an_event_opens_its_video_at_the_rule_frame() {
+        let mut desktop = Desktop::default();
+        let event = event(419, 6.99, "car", 1288, 665);
+        desktop.events.push(event.clone());
+        desktop.jump_to_event(&event);
+        // The rule reports frame 419 one-based; the player seeks to 418.
+        assert_eq!(desktop.frame, 418);
+        assert_eq!(desktop.preview_path, Some(PathBuf::from("clip.mp4")));
+        assert_eq!(desktop.status, "已跳到 00:06.990（car #1288）");
+    }
+
+    #[test]
+    fn a_row_opens_and_closes_and_keeps_its_own_state() {
+        let mut desktop = Desktop::default();
+        let groups = group_events(&[
+            event(82, 2.733, "car", 2, 8),
+            event(100, 3.333, "car", 2, 120),
+        ]);
+        let key = groups[0].key();
+        assert!(!desktop.expanded.contains(&key));
+        desktop.toggle_group(key.clone());
+        assert!(desktop.expanded.contains(&key));
+        desktop.toggle_group(key.clone());
+        assert!(!desktop.expanded.contains(&key));
+    }
+
     #[test]
     fn open_picker_does_not_block_the_ui() {
         let started = Instant::now();

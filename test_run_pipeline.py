@@ -21,7 +21,7 @@ def make_args(**overrides):
         "device": "0",
         "reuse_tracks": False,
         "geometry": "image",
-        "mode": "review",
+        "mode": "strict",
         "dry_run": False,
     }
     values.update(overrides)
@@ -130,12 +130,14 @@ class BuildCommandsTest(unittest.TestCase):
         self.assertEqual(render[render.index("--labels") + 1], str(labels))
         self.assertEqual(render[render.index("--output") + 1], str(overlay))
 
-    def test_review_mode_is_the_default_and_strict_mode_keeps_the_crossing_filter(self):
+    def test_strict_mode_is_the_default_and_review_mode_adds_waiting_pedestrians(self):
+        # strict: the rule's candidate list already finds 14/17 with 50 reports; review adds one hit for 71 more reports
+        self.assertEqual(run_pipeline._parse_args([]).mode, "strict")
         self.make_masks()
         rule = [command for command in self.commands() if "yield_image_rule.py" in command[1]][0]
-        self.assertIn("--include-waiting", rule)
-        rule = [command for command in self.commands(mode="strict") if "yield_image_rule.py" in command[1]][0]
         self.assertNotIn("--include-waiting", rule)
+        rule = [command for command in self.commands(mode="review") if "yield_image_rule.py" in command[1]][0]
+        self.assertIn("--include-waiting", rule)
 
     def test_evidence_step_cuts_padded_clips_into_the_run_folder(self):
         self.make_masks()
