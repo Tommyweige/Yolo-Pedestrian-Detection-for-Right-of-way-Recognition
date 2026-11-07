@@ -100,5 +100,31 @@ the pedestrian track: foot depth into the mask (negative = outside, in person he
 
 So the edge decision is ambiguous given the current mask: whether the gap is mask error or labelling judgement can only be
 told by measuring the mask edge against hand-marked crosswalk edges.
+
+## Follow-up: visual check of the mask edge at every waiting candidate (2026-11-07)
+
+All 26 waiting-only candidates, cropped around the foot at its deepest frame with the mask contour drawn over the painted
+stripes. The mask's outer edge matches the paint well in every crop; where it goes wrong is around people and vehicles.
+
+Labelled candidates (11 crops, 8 distinct moments):
+
+| what the crop shows | moments |
+|---|---|
+| pedestrian walking on the stripes, but the mask is carved out around their legs and the car beside them (segmentation labels those pixels person/car), so the foot sits at the edge of a hole | 3 |
+| on the stripes, mask correct, foot just inside the end of the crosswalk (depth < 0.1 person heights) | 1 |
+| legs hidden behind a passing scooter, so the box bottom (foot estimate) is wrong | 1 |
+| the paired "person" is a rider on a scooter (no motorcycle box) | 1 |
+| person really standing on the kerb beside the crosswalk end: the labeller counted a waiting pedestrian | 1 |
+| night, unclear | 1 |
+
+Unlabelled candidates: 11 are clearly off the crosswalk (sidewalk, kerb, or riders), 1 is a true kerb stander right at
+the edge, and 3 are pedestrians really on the stripes whose moment is either 2-4 s away from a label of the same
+incident or a second vehicle at an already-labelled moment.
+
+So the dominant mask failure is the carve-out under occluders, not the edge position. Filling it naively does not help
+(in-sample, all below or at the default 0.471): `close_px` 30 → 0.474, 45 → 0.462, convex hull of each crosswalk blob →
+0.409 (it swallows the kerbs, so kerb standers become crossers). A fix needs the crosswalk shape behind occluders, e.g.
+accumulating the mask over frames before people and cars cover it, or the fitted-crosswalk geometry
+(`geometry="crosswalk"`) extended to judge the foot against the fitted band instead of the per-frame mask.
 Fine-tuning on iVS train (89k frames) could help night pedestrians and scooters, but its scooter boxes include the rider,
 so the rule's rider test would have to change with it.
