@@ -106,6 +106,32 @@ class Env(unittest.TestCase):
                 d.find_opencode()
 
 
+class SplitTestCommand(unittest.TestCase):
+    def test_plain_command_splits_into_arguments(self):
+        with mock.patch.object(d.os, "name", "posix"):
+            self.assertEqual(
+                d.split_test_command("python -m unittest tests.test_a -v"),
+                ["python", "-m", "unittest", "tests.test_a", "-v"],
+            )
+
+    def test_windows_mode_strips_outer_double_quotes(self):
+        with mock.patch.object(d.os, "name", "nt"):
+            got = d.split_test_command('cmd /c "C:\\a b\\x.cmd"')
+        self.assertEqual(got, ["cmd", "/c", "C:\\a b\\x.cmd"])
+
+    def test_non_windows_mode_keeps_quoted_argument_whole(self):
+        with mock.patch.object(d.os, "name", "posix"):
+            got = d.split_test_command('python "C:\\a b\\x.py"')
+        self.assertEqual(got, ["python", "C:\\a b\\x.py"])
+
+    def test_empty_or_blank_command_raises(self):
+        for name in ("nt", "posix"):
+            with mock.patch.object(d.os, "name", name):
+                for bad in ("", "   "):
+                    with self.assertRaises(ValueError):
+                        d.split_test_command(bad)
+
+
 class SameAsCheckout(unittest.TestCase):
     def test_unchanged_modified_and_new_files(self):
         import subprocess

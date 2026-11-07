@@ -23,3 +23,15 @@ runs/
 
 # Per-video human event labels (contain video file names).
 labels/
+
+# Amp orb portal registrations.
+.amp/portals/
+
+# Root-level local dataset copies, run outputs, and downloaded weights.
+/data/
+/out/
+*.pt
+
+# Local third-party evaluation snapshot of the pre-PR#27 state; superseded by
+# docs/linux-setup.md, so keep it out of the repo.
+/EVALUATION-REPORT.md

@@ -25,6 +25,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -200,6 +201,16 @@ def tail(text, n=30, limit=3000):
     return s[-limit:]
 
 
+def split_test_command(test: str) -> list[str]:
+    """把 --test 拆成參數清單（不經 shell）。Windows 下去掉參數外層成對的雙引號。"""
+    parts = shlex.split(test, posix=(os.name != "nt"))
+    if not parts:
+        raise ValueError("empty --test command")
+    if os.name == "nt":
+        parts = [p[1:-1] if len(p) >= 2 and p.startswith('"') and p.endswith('"') else p for p in parts]
+    return parts
+
+
 def run_worker(wt: Path, wrapped: Path, log: Path, timeout: int, model: str, variant: str = VARIANT):
     cmd = [find_opencode(), "run", "--standalone", "--auto", "-m", f"{model}#{variant}",
            "Implement the attached ticket. Follow its rules strictly.", "-f", str(wrapped)]
@@ -315,12 +326,14 @@ def cmd_run(a):
     test_rc, test_tail = None, ""
     if a.test and status in (None, "OUT_OF_SCOPE"):
         try:
-            r = subprocess.run(a.test, shell=True, cwd=wt, capture_output=True, text=True,
+            r = subprocess.run(split_test_command(a.test), cwd=wt, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=300,
                                stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONUTF8": "1"})
             test_rc, test_tail = r.returncode, tail(strip_ansi(r.stdout + r.stderr))
         except subprocess.TimeoutExpired:
             test_rc, test_tail = -1, "測試逾時 300s"
+        except OSError as e:                             # FileNotFoundError 也是 OSError
+            test_rc, test_tail = 127, f"找不到測試指令: {e}"
     if status is None:
         status = "PASS" if (test_rc == 0 or not a.test) else "TEST_FAILED"
 

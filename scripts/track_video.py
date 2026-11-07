@@ -7,11 +7,16 @@ Chained homographies drift over long clips and assume mostly planar/far content;
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent  # repo root, where detector_weights.py lives
+sys.path.insert(0, str(ROOT))
+from detector_weights import MANIFEST, resolve_weights, verify_sha256  # noqa: E402
 
 KIND_NAMES = ("person", "car", "motorcycle", "bus", "truck")  # class ids are looked up by NAME per model
 SCALE = 0.5  # features are matched on a half-size image
@@ -94,7 +99,7 @@ def refilter(video, path):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--video", required=True)
-    parser.add_argument("--weights", help="verified YOLO26 .pt (see docs/environments.md)")
+    parser.add_argument("--weights", help="YOLO26 .pt; default: $TRAFFIC_DETECTOR_WEIGHTS, then weights/yolo26n-traffic.pt, then stock yolo26n.pt")
     parser.add_argument("--output", help="output folder")
     parser.add_argument("--refilter", metavar="RAW_TRACKS.json", help="only re-apply the camera-fixed-vehicle filter to an existing raw_tracks.json (no detection)")
     parser.add_argument("--reference-frame", type=int, help="stabilise into this frame's coordinates; omit to skip stabilisation (raw tracks only)")
@@ -111,9 +116,11 @@ def main(argv=None):
     args = parse_args(argv)
     if args.refilter:
         return refilter(args.video, Path(args.refilter))
-    if not (args.weights and args.output):
-        print("--weights and --output are required (unless --refilter)", file=sys.stderr)
+    if not args.output:
+        print("--output is required (unless --refilter)", file=sys.stderr)
         return 2
+    weights, source = resolve_weights(args.weights, ROOT, os.environ)
+    print(f"detector weights: {weights} ({source})", flush=True)
     from ultralytics import YOLO  # imported late so --help works without the modern env
     import torch
     if args.device != "cpu" and not torch.cuda.is_available():
@@ -126,7 +133,13 @@ def main(argv=None):
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     size = (int(capture.get(3)), int(capture.get(4)))
     capture.release()
-    model = YOLO(args.weights)
+    model = YOLO(weights)
+    resolved = Path(getattr(model, "ckpt_path", None) or weights)
+    if resolved.exists():
+        if verify_sha256(resolved, ROOT / MANIFEST) == "verified":
+            print("weights sha256: verified", flush=True)
+        else:
+            print("weights sha256: unlisted (not in requirements/smoke-assets.json)", flush=True)
     kinds = {i: n for i, n in model.names.items() if n in KIND_NAMES}  # COCO-80 and our 7-class models differ in ids
     tracks, steps, failures, previous = {}, {}, [], None
     stream = model.track(source=args.video, stream=True, tracker="bytetrack.yaml", persist=True,
@@ -186,7 +199,7 @@ def main(argv=None):
     (output / "raw_tracks.json").write_text(json.dumps(list(tracks.values())), encoding="utf-8")
     (output / "stabilisation.json").write_text(json.dumps({
         "video": Path(args.video).name, "fps": fps, "frames_total": total, "reference_frame": args.reference_frame,
-        "weights": Path(args.weights).name, "failed_frames": failures,
+        "weights": Path(weights).name, "failed_frames": failures,
         "to_reference": {str(f): m.tolist() for f, m in to_ref.items()},
     }), encoding="utf-8")
     print(json.dumps({"tracks": len(stabilised), "frames": len(steps) + 1, "stabilisation_failures": len(failures)}))

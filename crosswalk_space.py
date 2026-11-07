@@ -42,14 +42,15 @@ class CrosswalkSpace:
     def along(self, x, y, length, margin):
         """Whether (x, y), at crosswalk coordinate `length`, lies within the crosswalk's real extent along L.
 
-        L is bounded by the quadrilateral's ends. A crosswalk cut by the image border has no real end there, so L alone
-        cannot bound it, and the projection of far-away points can land anywhere: those must at least be near the
-        visible piece in the image (within half its longest edge).
+        L is bounded by the quadrilateral's ends. A crosswalk cut by the image border has no real end there, and the
+        projection of a point beyond the visible piece lands anywhere, so such a crosswalk claims only points inside
+        the fitted quadrilateral: whatever continues past it is not in the picture and cannot be checked. On a real
+        clip, claiming "within half the longest edge" instead put 42% of the vehicles called "on the crosswalk" on
+        ground the crosswalk mask does not cover.
         """
         if not self.clipped:
             return -margin <= length <= 1 + margin
-        reach = 0.5 * max(np.linalg.norm(self.quad[(i + 1) % 4] - self.quad[i]) for i in range(4))
-        return cv2.pointPolygonTest(self.quad.astype(np.float32).reshape(-1, 1, 2), (float(x), float(y)), True) >= -reach
+        return cv2.pointPolygonTest(self.quad.astype(np.float32).reshape(-1, 1, 2), (float(x), float(y)), True) >= 0
 
     def to_crosswalk(self, x, y):
         point = self.matrix @ np.array([x, y, 1.0])
