@@ -41,7 +41,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([step.label for step in (segmentation, tracking, rule)],
                          ["斑馬線分割", "偵測與追蹤", "不禮讓規則"])
         self.assertIn("segment_crosswalk.py", segmentation.command[1])
-        self.assertEqual(segmentation.command[segmentation.command.index("--stride") + 1], "3")
+        self.assertEqual(segmentation.command[segmentation.command.index("--every-seconds") + 1], "0.1")
         self.assertEqual(segmentation.command[segmentation.command.index("--output") + 1],
                          str(self.work / "seg"))
         self.assertEqual(segmentation.command[segmentation.command.index("--model") + 1], str(self.model))

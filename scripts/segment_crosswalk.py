@@ -38,6 +38,11 @@ def sampled_frames(capture, numbers):
         yield number, frame
 
 
+def stride_for(fps, seconds):
+    """Frames between masks so one is taken every `seconds` (rounded, at least 1; unknown fps -> every frame)."""
+    return max(1, int(fps * seconds + 0.5))
+
+
 def prefetch(items, depth=8):
     """Run the iterator on a background thread so decoding overlaps the GPU; errors are re-raised here."""
     buffer, done = queue.Queue(maxsize=depth), object()
@@ -74,6 +79,8 @@ def main(argv=None):
     parser.add_argument("--model", required=True, help="folder holding config.json + model.safetensors")
     parser.add_argument("--frames", type=int, nargs="+", help="one-based frame numbers")
     parser.add_argument("--stride", type=int, help="instead of --frames: every Nth frame of the whole video; also saves masks.npz")
+    parser.add_argument("--every-seconds", type=float, help="like --stride, but one mask per this many seconds of video "
+                        "whatever the fps (0.1 s: stride 3 at 25-30 fps, 6 at 60 fps)")
     parser.add_argument("--output", required=True, help="output folder")
     parser.add_argument("--short-edge", type=int, default=720)
     args = parser.parse_args(argv)
@@ -91,6 +98,9 @@ def main(argv=None):
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(args.video)
+    if args.every_seconds:
+        args.stride = stride_for(capture.get(cv2.CAP_PROP_FPS), args.every_seconds)
+        print(f"stride {args.stride} (one mask per {args.every_seconds} s)", flush=True)
     if args.stride:
         total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
         args.frames = list(range(1, total + 1, args.stride))

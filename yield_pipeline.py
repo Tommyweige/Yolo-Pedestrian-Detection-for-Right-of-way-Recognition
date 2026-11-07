@@ -31,7 +31,7 @@ MODEL_ENV = "TRAFFIC_CROSSWALK_MODEL"
 DEFAULT_MODEL = Path("runtime") / "models" / "mask2former-mapillary"
 DEVICE_ENV = "TRAFFIC_DEVICE"
 # Same values as scripts/run_pipeline.py, so a GUI run and a CLI run see the same input.
-STRIDE = 3
+SEGMENT_EVERY_SECONDS = 0.1  # one crosswalk mask per 0.1 s: stride 3 at 25-30 fps, 6 at 60 fps
 CONF = 0.15
 IMGSZ = 1280
 
@@ -79,7 +79,7 @@ def plan(video, work, environ=None) -> list:
         str(ROOT / "scripts" / "segment_crosswalk.py"),
         "--video", str(video),
         "--model", str(crosswalk_model(environ)),
-        "--stride", str(STRIDE),
+        "--every-seconds", str(SEGMENT_EVERY_SECONDS),
         "--output", str(work / "seg"),
     )
     tracking = (

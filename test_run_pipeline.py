@@ -71,7 +71,7 @@ class BuildCommandsTest(unittest.TestCase):
         segment = commands[0]
         self.assertIn("segment_crosswalk.py", segment[1])
         self.assertEqual(segment[segment.index("--model") + 1], "runtime/models/mask2former-mapillary")
-        self.assertEqual(segment[segment.index("--stride") + 1], "3")
+        self.assertEqual(segment[segment.index("--every-seconds") + 1], "0.1")
         self.assertEqual(segment[segment.index("--output") + 1], str(self.dir / "seg"))
 
     def test_reuse_tracks_refilters_the_existing_result(self):

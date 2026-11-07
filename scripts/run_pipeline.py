@@ -19,6 +19,9 @@ PAD_SECONDS = 2  # 證據片段在規則的證據窗前後各多留幾秒，方�
 # 互不依賴的步驟同時跑：分割與追蹤一起佔 GPU（各自的輸出與分開跑時逐位元相同，20 秒影片 109 -> 78 秒，
 # 顯存峰值約 4 GB）；疊圖與證據片段都只讀事件檔。--serial 改回一次一步（顯存不夠時用）。
 TOGETHER = ((1, 2), (3,), (4, 5))
+# 每 0.1 秒一張遮罩：25-30 fps 影片是每 3 格（和以前一樣），60 fps 影片從每 3 格改成每 6 格，分割量減半；
+# 7 支標註影片 strict 14/17 命中不變、候選 50 -> 51，review 不變，crosswalk 幾何 11 -> 12 命中
+SEGMENT_EVERY_SECONDS = "0.1"
 
 
 def build_commands(video: Path, args, root: Path, environ) -> list[list[str]]:
@@ -57,8 +60,8 @@ def _plan(video: Path, args, root: Path, environ):
                     str(video),
                     "--model",
                     "runtime/models/mask2former-mapillary",
-                    "--stride",
-                    "3",
+                    "--every-seconds",
+                    SEGMENT_EVERY_SECONDS,
                     "--output",
                     str(work / "seg"),
                 ],

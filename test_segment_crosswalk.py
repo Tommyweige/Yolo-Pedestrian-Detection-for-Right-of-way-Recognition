@@ -57,6 +57,15 @@ class PrefetchTest(unittest.TestCase):
             list(seg.prefetch(broken()))
 
 
+class StrideTest(unittest.TestCase):
+    def test_one_mask_per_tenth_of_a_second_rounded(self):
+        self.assertEqual([seg.stride_for(fps, 0.1) for fps in (25, 29.97, 30, 50, 59.94, 60, 24)], [3, 3, 3, 5, 6, 6, 2])
+
+    def test_never_below_one_frame(self):
+        self.assertEqual(seg.stride_for(5, 0.1), 1)
+        self.assertEqual(seg.stride_for(0, 0.1), 1)  # unknown fps: every frame
+
+
 class NormalizeTest(unittest.TestCase):
     def test_matches_rescale_then_mean_std_from_the_config(self):
         config = {"rescale_factor": 1 / 255, "image_mean": [0.5, 0.25, 0.0], "image_std": [0.5, 0.25, 1.0]}
