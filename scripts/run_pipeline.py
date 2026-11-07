@@ -1,4 +1,4 @@
-# 跨平台批次流程：斑馬線分割 -> 追蹤 -> 讓行人規則 -> 疊圖。每支影片一個資料夾 datasets/<run>/<stem>/
+# 跨平台批次流程：斑馬線分割 -> 追蹤 -> 讓行人規則 -> 疊圖 -> 證據片段，最後列出整批候選清單 datasets/<run>/candidates.csv
 """以 Python 重寫 run_pipeline.ps1 的流程，Windows 與 Linux 共用。"""
 
 from __future__ import annotations
@@ -8,11 +8,14 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
+STEPS = 5
+PAD_SECONDS = 2  # 證據片段在規則的證據窗前後各多留幾秒，方便人工判斷前因後果
 
 
 def build_commands(video: Path, args, root: Path, environ) -> list[list[str]]:
@@ -31,6 +34,8 @@ def _plan(video: Path, args, root: Path, environ):
     tracks = work / "tracks" / "raw_tracks.json"
     events = root / "datasets" / run / "events" / f"{stem}.jsonl"
     overlay = root / "datasets" / run / "overlay" / f"{stem}.mp4"
+    evidence = root / "datasets" / run / "evidence" / stem
+    mode = getattr(args, "mode", "review")
 
     modern = _python(environ, "TRAFFIC_MODERN_PYTHON")
     labeling = _python(environ, "TRAFFIC_LABELING_PYTHON")
@@ -93,10 +98,11 @@ def _plan(video: Path, args, root: Path, environ):
         ]
         steps.append((2, "偵測與追蹤", track))
 
+    rule_label = "檢舉輔助：含路緣等待者" if mode == "review" else "嚴格：只報已上斑馬線"
     steps.append(
         (
             3,
-            f"讓行人規則（{getattr(args, 'geometry', 'image')} 幾何）",
+            f"讓行人規則（{getattr(args, 'geometry', 'image')} 幾何，{rule_label}）",
             [
                 modern,
                 str(root / "yield_image_rule.py"),
@@ -110,7 +116,8 @@ def _plan(video: Path, args, root: Path, environ):
                 str(getattr(args, "geometry", "image")),
                 "--output",
                 str(events),
-            ],
+            ]
+            + (["--include-waiting"] if mode == "review" else []),
         )
     )
     steps.append(
@@ -135,7 +142,48 @@ def _plan(video: Path, args, root: Path, environ):
             ],
         )
     )
+    steps.append(
+        (
+            5,
+            "證據片段與截圖",
+            [
+                modern,
+                str(root / "scripts" / "export_evidence.py"),
+                "--video",
+                str(video),
+                "--events",
+                str(events),
+                "--output",
+                str(evidence),
+                "--pad-seconds",
+                str(PAD_SECONDS),
+            ],
+        )
+    )
     return steps
+
+
+def candidate_list_command(args, root: Path, environ) -> list[str]:
+    """整批影片跑完後，把所有事件彙整成一張候選清單。"""
+    run_dir = Path(root) / "datasets" / getattr(args, "run", "eval-run2")
+    return [_python(environ, "TRAFFIC_MODERN_PYTHON"), str(Path(root) / "scripts" / "list_candidates.py"), "--run-dir", str(run_dir)]
+
+
+def speed_text(video_seconds: float | None, elapsed: float) -> str:
+    if not video_seconds:
+        return f"處理 {elapsed:.0f} 秒"
+    return f"影片 {video_seconds:.0f} 秒，處理 {elapsed:.0f} 秒（即時的 {elapsed / video_seconds:.1f} 倍）"
+
+
+def _video_seconds(video: Path) -> float | None:
+    try:
+        import cv2
+    except ImportError:
+        return None
+    capture = cv2.VideoCapture(str(video))
+    fps, frames = capture.get(cv2.CAP_PROP_FPS), capture.get(cv2.CAP_PROP_FRAME_COUNT)
+    capture.release()
+    return frames / fps if fps and frames else None
 
 
 def _python(environ, variable: str) -> str:
@@ -156,6 +204,12 @@ def _parse_args(argv=None):
         choices=("image", "crosswalk"),
         default="image",
         help="讓行人規則的判斷方式：image（像素條帶，預設）或 crosswalk（斑馬線座標）",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("review", "strict"),
+        default="review",
+        help="review（預設，檢舉輔助：路緣等待者也列為候選，寧可多報）或 strict（只報行人已上斑馬線）",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -207,26 +261,42 @@ def main(argv=None) -> int:
                 run_dir / stem / "tracks",
                 run_dir / "events",
                 run_dir / "overlay",
+                run_dir / "evidence" / stem,
             ):
                 directory.mkdir(parents=True, exist_ok=True)
             _emit(f"=== [{number}/{total}] {video.name}  {_now()}", log)
+        video_start = time.perf_counter()
 
         for step, description, command in _plan(video, args, root, os.environ):
             if args.dry_run:
                 if command is not None:
                     print(shlex.join(command))
                 continue
-            _emit(f"  [{step}/4] {description}", log)
+            _emit(f"  [{step}/{STEPS}] {description}", log)
             if command is None:
                 continue
+            step_start = time.perf_counter()
             result = subprocess.run(command, check=False, cwd=root)
             if result.returncode != 0:
                 _emit(f"失敗：{shlex.join(command)}（結束碼 {result.returncode}）", log)
                 return 1
+            _emit(f"        {time.perf_counter() - step_start:.0f} 秒", log)
+        if not args.dry_run:
+            _emit(f"  {video.name}：{speed_text(_video_seconds(video), time.perf_counter() - video_start)}", log)
 
+    command = candidate_list_command(args, root, os.environ)
     if args.dry_run:
+        print(shlex.join(command))
         return 0
-    _emit(f"全部完成 {_now()}。事件:datasets/{args.run}/events  疊圖:datasets/{args.run}/overlay", log)
+    result = subprocess.run(command, check=False, cwd=root)
+    if result.returncode != 0:
+        _emit(f"失敗：{shlex.join(command)}（結束碼 {result.returncode}）", log)
+        return 1
+    _emit(
+        f"全部完成 {_now()}。候選清單:datasets/{args.run}/candidates.csv  證據:datasets/{args.run}/evidence"
+        f"  事件:datasets/{args.run}/events  疊圖:datasets/{args.run}/overlay",
+        log,
+    )
     return 0
 
 

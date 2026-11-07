@@ -92,6 +92,14 @@ class ImageRule(unittest.TestCase):
         events = run(tracks, frames=range(1, 61))
         self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 2)])
 
+    def test_review_mode_reports_the_crossing_pedestrian_rather_than_an_earlier_waiting_one(self):
+        # with the crossing filter off, the vehicle's one event must still be the pair a strict run would report
+        waiting = (1230, 480, 1290, 585)
+        tracks = [track(1, "person", waiting, range(1, 61)), track(2, "person", PED_ON, range(31, 61)),
+                  track(10, "car", CAR_ON, range(1, 61))]
+        events = run(tracks, frames=range(1, 61), params=replace(P, require_crossing=False))
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id, e.pedestrian_entered_crosswalk) for e in events], [(10, 2, True)])
+
     def test_cli_refuses_to_guess_fps(self):
         from yield_image_rule import main
         self.assertEqual(main(["--masks", "m.npz", "--tracks", "t.json", "--output", "o.jsonl"]), 2)

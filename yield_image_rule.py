@@ -290,12 +290,16 @@ def detect(mask_at, tracks, params, frames):
         for pair in [p for p in started if p not in streak]:
             del started[pair]
     events, reported = [], set()
-    for f, (vid, pid), kind, state, reasons in sorted(candidates, key=lambda c: c[0]):
+    entered_of = {id(c): any(abs(g - c[0]) <= window for g in deep_frames.get(c[1][1], [])) for c in candidates}
+    has_crossing = {c[1][0] for c in candidates if entered_of[id(c)]}
+    for c in sorted(candidates, key=lambda c: c[0]):
+        f, (vid, pid), kind, state, reasons = c
         if vid in reported:
             continue  # one event per vehicle: its earliest qualifying pedestrian
-        entered = any(abs(g - f) <= window for g in deep_frames.get(pid, []))
-        if params.require_crossing and not entered:
-            continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle)
+        entered = entered_of[id(c)]
+        if not entered and (params.require_crossing or vid in has_crossing):
+            continue  # stood at the edge the whole time: waiting, not crossing (does not use up the vehicle; with the
+            # filter off, a vehicle that also met a crossing pedestrian reports that pair, not the waiting one)
         reported.add(vid)
         span = round(params.evidence_s * params.fps)
         events.append(Event("vehicle_on_crosswalk_with_pedestrian", f, round(f / params.fps, 3), vid, kind, pid, state,
@@ -342,7 +346,8 @@ def main(argv=None):
     tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
     last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)
     events = detect(mask_at, tracks, params, range(1, last + 1))
-    Path(args.output).write_text("".join(json.dumps(e.to_dict(), ensure_ascii=False) + "\n" for e in events), encoding="utf-8")
+    mode = "review" if args.include_waiting else "strict"  # recorded so an events file says which filter made it
+    Path(args.output).write_text("".join(json.dumps(dict(e.to_dict(), mode=mode), ensure_ascii=False) + "\n" for e in events), encoding="utf-8")
     print(json.dumps({"events": len(events)}))
     return 0
 
