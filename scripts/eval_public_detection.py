@@ -153,7 +153,32 @@ def summarize(records) -> dict:
     return summary
 
 
+def _jpeg_height(path):
+    """Read the height from a JPEG's SOF header without decoding the pixels; None if not a parsable JPEG."""
+    with open(path, "rb") as handle:
+        if handle.read(2) != bytes((0xFF, 0xD8)):
+            return None
+        while True:
+            marker = handle.read(2)
+            if len(marker) < 2 or marker[0] != 0xFF:
+                return None
+            if marker[1] in (0xD8, 0x01) or 0xD0 <= marker[1] <= 0xD7:
+                continue
+            length = handle.read(2)
+            if len(length) < 2:
+                return None
+            size = int.from_bytes(length, "big")
+            if 0xC0 <= marker[1] <= 0xCF and marker[1] not in (0xC4, 0xC8, 0xCC):
+                header = handle.read(3)
+                return int.from_bytes(header[1:3], "big") if len(header) == 3 else None
+            handle.seek(size - 2, 1)
+
+
 def _image_height(path):
+    if Path(path).suffix.lower() in (".jpg", ".jpeg"):
+        height = _jpeg_height(path)
+        if height:
+            return height
     image = cv2.imread(str(path))
     return int(image.shape[0]) if image is not None else None
 
@@ -256,10 +281,24 @@ def _predict(items, cache, cache_path, weights, conf, imgsz, batch, log):
     model = YOLO(weights)
     names = dict(model.names)
     classes = [index for index, name in names.items() if name in PRED_MAP]
-    for start in range(0, len(uncached), batch):
-        chunk = uncached[start:start + batch]
-        results = model.predict([str(item["image"]) for item in chunk], conf=conf, imgsz=imgsz,
-                                device=0, half=True, verbose=False, classes=classes)
+    from concurrent.futures import ThreadPoolExecutor
+
+    def load(chunk):  # decode the next batch on worker threads while the GPU runs the current one
+        return list(pool.map(lambda item: cv2.imread(str(item["image"])), chunk))
+
+    chunks = [uncached[start:start + batch] for start in range(0, len(uncached), batch)]
+    written = 0
+    pool = ThreadPoolExecutor(max_workers=8)
+    prefetch = ThreadPoolExecutor(max_workers=1)
+    pending = prefetch.submit(load, chunks[0])
+    for index, chunk in enumerate(chunks):
+        images = pending.result()
+        if index + 1 < len(chunks):
+            pending = prefetch.submit(load, chunks[index + 1])
+        keep = [(item, image) for item, image in zip(chunk, images) if image is not None]
+        chunk = [item for item, _ in keep]
+        results = model.predict([image for _, image in keep], conf=conf, imgsz=imgsz,
+                                device=0, half=True, verbose=False, classes=classes) if keep else []
         for item, result in zip(chunk, results):
             found = []
             boxes = getattr(result, "boxes", None)
@@ -272,11 +311,14 @@ def _predict(items, cache, cache_path, weights, conf, imgsz, batch, log):
                                       "conf": float(score)})
             predictions[id(item)] = found
             cache.setdefault(item["dataset"], {})[item["key"]] = found
-        if cache_path:
-            _write_cache(cache_path, cache)
         done = len(predictions)
-        if done % 200 == 0:
+        if cache_path and done - written >= 200:  # rewriting the whole JSON every batch starved the GPU
+            _write_cache(cache_path, cache)
+            written = done
+        if done // 200 != (done - len(chunk)) // 200:
             log(f"[{done}/{len(items)}] predicted")
+    pool.shutdown()
+    prefetch.shutdown()
     if cache_path:
         _write_cache(cache_path, cache)
     return predictions
@@ -321,7 +363,7 @@ def main(argv=None) -> int:
     parser.add_argument("--weights", default="runtime/smoke-assets/yolo26x.pt")
     parser.add_argument("--conf", type=float, default=0.15)
     parser.add_argument("--imgsz", type=int, default=1280)
-    parser.add_argument("--batch", type=int, default=8)
+    parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--ivs", nargs="*", default=[], metavar="DIR",
                         help="iVS folders with Annotations/*.xml and JPEGImages/*.jpg")
     parser.add_argument("--bdd-images", help="BDD100K image folder")
