@@ -36,7 +36,47 @@ python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu
 python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu
 ```
 
-輸出：`datasets/<run>/events/<影片>.jsonl`（事件）與 `datasets/<run>/overlay/<影片>.mp4`（疊圖）。
+輸出（都在 `datasets/<run>/` 底下）：
+
+- `candidates.csv`：**先看這個**。整批影片的候選清單，每列一個候選：影片、時間、優先（高＝行人已走上斑馬線；
+  低＝行人只在斑馬線邊緣）、提醒、片段與截圖的相對路徑。UTF-8 帶 BOM，Excel 可直接開。
+- `evidence/<影片>/event<NNN>_t<秒>s.mp4`：每個候選的片段，規則的證據窗前後各多留 2 秒；左上角是幀號，
+  紅框那一幀是事件幀。由 OpenCV 重新編碼（mp4v、無聲音），畫質比原片稍差。
+- `evidence/<影片>/event<NNN>_t<秒>s.png`：事件幀的原始解析度截圖，沒有任何標記，用來看車牌。
+- `events/<影片>.jsonl`（事件）與 `overlay/<影片>.mp4`（疊圖），標註工具會讀這兩個。
+- `datasets/<run>.log`：每一步的耗時，以及每支影片「影片長度 vs 處理時間」。
+
+**速度（實測 2026-11-07，RTX 4060 Laptop，一支 20 秒 1080p30 影片）**：總共 179 秒，約即時的 9 倍。
+其中斑馬線分割 106 秒、偵測與追蹤 49 秒、疊圖 16 秒、證據片段 6 秒、規則 3 秒。換算下來，1 小時的行車記錄
+大約要跑 9 小時，適合整夜批次處理。最慢的是斑馬線分割（Mask2Former，每 3 幀做一次）。
+
+### strict（預設）與 review 模式
+
+這個工具是**檢舉輔助**：人會看過每個候選，再決定要不要檢舉。預設 `--mode strict` 只報行人走上斑馬線的情況，
+而且規則本身已經是候選清單（每組車與行人的接觸都報），在目前的標記資料上找到 14/17 個標記事件、共 50 個候選。
+`--mode review` 連只在斑馬線邊緣等待的行人也列為候選（優先＝低）：找到 15/17，但候選暴增到 121 個，
+平均每 2 秒影片就一個，人看不完，所以不當預設。數字可用 `python scripts/eval_rule.py`（加 `--include-waiting`
+即 review）重算。7 支影片、17 個標記事件太少，這些數字只能當參考。
+
+```bash
+python scripts/run_pipeline.py --folder path/to/videos --run my-run --mode review
+```
+
+PowerShell 版 `scripts/run_pipeline.ps1` 有相同的 `-Mode` 參數。
+
+### 斑馬線座標幾何（選用）
+
+預設的 `--geometry image` 用像素條帶與行人身高判斷「行人在斑馬線上／車輛碰到斑馬線」。遇到斑馬線嚴重透視
+（遠處很窄、近處很寬）或斜置時，改成 `--geometry crosswalk`：規則改用斑馬線遮罩擬合出的四邊形座標
+（`crosswalk_space.py`，沿斑馬線 L、跨越斑馬線 W，兩條長邊為 W=0 與 W=1），「在斑馬線上／在邊緣等待／車輛
+碰到斑馬線」都改成在 W 上判斷，不需要行人身高。擬合不出四邊形時退回原來的影像幾何。
+
+```bash
+python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu --geometry crosswalk
+```
+
+兩者的事件欄位相同；差異、門檻由來與實測結果見
+[docs/yield-image-rule.md](docs/yield-image-rule.md)。
 
 ## 偵測器權重
 

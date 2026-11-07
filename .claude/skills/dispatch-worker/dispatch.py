@@ -49,7 +49,8 @@ UNAVAILABLE_RE = re.compile(
     r"credit|ProviderModelNotFound|model.{0,30}not found|not available|overloaded|"
     r"no longer available|too many requests|ECONNREFUSED|ENOTFOUND|fetch failed|"
     r"endpoint is unavailable|upstream request failed|streaming response failed|"
-    r"internal server error|server_error",
+    r"internal server error|server_error|"
+    r"free models may train on request data",  # account privacy setting refuses the free model: fall back to Go
     re.IGNORECASE,
 )
 STRIP_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE", "AWS_BEARER_TOKEN_BEDROCK")

@@ -20,6 +20,8 @@ def make_args(**overrides):
         "imgsz": 1280,
         "device": "0",
         "reuse_tracks": False,
+        "geometry": "image",
+        "mode": "strict",
         "dry_run": False,
     }
     values.update(overrides)
@@ -58,12 +60,12 @@ class BuildCommandsTest(unittest.TestCase):
     def test_step_one_is_omitted_when_masks_already_exist(self):
         self.make_masks()
         commands = self.commands()
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 4)
         self.assertFalse(any("segment_crosswalk.py" in command[1] for command in commands))
 
     def test_step_one_segments_when_masks_are_missing(self):
         commands = self.commands()
-        self.assertEqual(len(commands), 4)
+        self.assertEqual(len(commands), 5)
         segment = commands[0]
         self.assertIn("segment_crosswalk.py", segment[1])
         self.assertEqual(segment[segment.index("--model") + 1], "runtime/models/mask2former-mapillary")
@@ -89,6 +91,13 @@ class BuildCommandsTest(unittest.TestCase):
         self.assertEqual(track[track.index("--conf") + 1], "0.15")
         self.assertEqual(track[track.index("--imgsz") + 1], "1280")
         self.assertEqual(track[track.index("--device") + 1], "0")
+
+    def test_the_geometry_flag_reaches_the_rule_step(self):
+        self.make_masks()
+        rule = [command for command in self.commands() if "yield_image_rule.py" in command[1]][0]
+        self.assertEqual(rule[rule.index("--geometry") + 1], "image")
+        rule = [command for command in self.commands(geometry="crosswalk") if "yield_image_rule.py" in command[1]][0]
+        self.assertEqual(rule[rule.index("--geometry") + 1], "crosswalk")
 
     def test_weights_are_only_passed_when_given(self):
         self.make_masks()
@@ -120,6 +129,37 @@ class BuildCommandsTest(unittest.TestCase):
         self.assertEqual(render[render.index("--events") + 1], str(events))
         self.assertEqual(render[render.index("--labels") + 1], str(labels))
         self.assertEqual(render[render.index("--output") + 1], str(overlay))
+
+    def test_strict_mode_is_the_default_and_review_mode_adds_waiting_pedestrians(self):
+        # strict: the rule's candidate list already finds 14/17 with 50 reports; review adds one hit for 71 more reports
+        self.assertEqual(run_pipeline._parse_args([]).mode, "strict")
+        self.make_masks()
+        rule = [command for command in self.commands() if "yield_image_rule.py" in command[1]][0]
+        self.assertNotIn("--include-waiting", rule)
+        rule = [command for command in self.commands(mode="review") if "yield_image_rule.py" in command[1]][0]
+        self.assertIn("--include-waiting", rule)
+
+    def test_evidence_step_cuts_padded_clips_into_the_run_folder(self):
+        self.make_masks()
+        evidence = self.commands()[3]
+        self.assertIn("export_evidence.py", evidence[1])
+        events = self.root / "datasets" / "eval-run2" / "events" / "clip.jsonl"
+        self.assertEqual(evidence[evidence.index("--events") + 1], str(events))
+        self.assertEqual(evidence[evidence.index("--output") + 1], str(self.root / "datasets" / "eval-run2" / "evidence" / "clip"))
+        self.assertEqual(evidence[evidence.index("--pad-seconds") + 1], "2")
+
+    def test_the_candidate_list_is_built_once_for_the_whole_run(self):
+        command = run_pipeline.candidate_list_command(make_args(), self.root, {})
+        self.assertIn("list_candidates.py", command[1])
+        self.assertEqual(command[command.index("--run-dir") + 1], str(self.root / "datasets" / "eval-run2"))
+
+
+class SpeedTest(unittest.TestCase):
+    def test_speed_is_reported_against_the_video_length(self):
+        self.assertEqual(run_pipeline.speed_text(60.0, 360.0), "影片 60 秒，處理 360 秒（即時的 6.0 倍）")
+
+    def test_unknown_video_length_reports_only_the_processing_time(self):
+        self.assertEqual(run_pipeline.speed_text(None, 12.4), "處理 12 秒")
 
 
 class MainTest(unittest.TestCase):
@@ -156,7 +196,8 @@ class MainTest(unittest.TestCase):
         run.assert_not_called()
         self.assertFalse((self.root / "datasets").exists())
         lines = output.splitlines()
-        self.assertEqual(len(lines), 8)
+        self.assertEqual(len(lines), 11)  # 2 videos x 5 steps, then the run's candidate list
+        self.assertIn("list_candidates.py", lines[-1])
         self.assertIn("a.MOV", lines[0])
         self.assertNotIn(str(self.folder / "b.mp4"), lines[0])
 
@@ -186,7 +227,7 @@ class MainTest(unittest.TestCase):
             run.return_value = mock.Mock(returncode=0)
             code, _, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
         self.assertEqual(code, 0)
-        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_count, 6)  # 5 steps + the candidate list
         for called in run.call_args_list:
             self.assertEqual(called.kwargs.get("cwd"), run_pipeline.ROOT)
 
@@ -196,7 +237,7 @@ class MainTest(unittest.TestCase):
             run.return_value = mock.Mock(returncode=0)
             code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
         self.assertEqual(code, 0)
-        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_count, 6)  # 5 steps + the candidate list
         self.assertIn("=== [1/1] a.mp4", output)
         self.assertIn("全部完成", output)
         log = self.root / "datasets" / "scratch.log"
@@ -204,6 +245,8 @@ class MainTest(unittest.TestCase):
         text = log.read_text(encoding="utf-8")
         self.assertIn("=== [1/1] a.mp4", text)
         self.assertIn("全部完成", text)
+        self.assertIn("candidates.csv", text)
+        self.assertIn("處理", text)  # the per-video processing time goes into the log
 
 
 if __name__ == "__main__":

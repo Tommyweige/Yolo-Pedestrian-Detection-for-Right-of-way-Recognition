@@ -1,5 +1,6 @@
 """yield_image_rule regressions with synthetic masks and boxes (no GPU)."""
 import unittest
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -27,9 +28,9 @@ def track(identity, kind, box, frames):
     return {"id": identity, "kind": kind, "boxes": [[f, *box] for f in frames]}
 
 
-def run(tracks, mask=None, frames=range(1, 31), params=P):
+def run(tracks, mask=None, frames=range(1, 31), params=None):
     mask = mask if mask is not None else mask_with(NEAR)
-    return detect(lambda f: mask, tracks, params, frames)
+    return detect(lambda f: mask, tracks, params or P, frames)
 
 
 # source-pixel boxes. Crosswalk rows 200-300 in mask px == 600-900 in source px.
@@ -136,6 +137,15 @@ class ImageRule(unittest.TestCase):
                   track(10, "car", CAR_ON, range(1, 61))]
         events = run(tracks, frames=range(1, 61))
         self.assertEqual([(e.vehicle_id, e.pedestrian_id) for e in events], [(10, 2)])
+
+    def test_review_mode_reports_the_crossing_pedestrian_rather_than_an_earlier_waiting_one(self):
+        # one event per vehicle with the crossing filter off: the vehicle's one event must still be the pair a strict run
+        # would report (the candidate list reports both pedestrians anyway)
+        waiting = (1230, 480, 1290, 585)
+        tracks = [track(1, "person", waiting, range(1, 61)), track(2, "person", PED_ON, range(31, 61)),
+                  track(10, "car", CAR_ON, range(1, 61))]
+        events = run(tracks, frames=range(1, 61), params=replace(P, require_crossing=False, report_every_contact=False))
+        self.assertEqual([(e.vehicle_id, e.pedestrian_id, e.pedestrian_entered_crosswalk) for e in events], [(10, 2, True)])
 
     def test_cli_refuses_to_guess_fps(self):
         from yield_image_rule import main
@@ -305,6 +315,80 @@ class ImageRule(unittest.TestCase):
         from yield_image_rule import vehicle_groups
         left, right = track(10, "car", CAR_ON, range(1, 31)), track(11, "car", (1400, 500, 1700, 870), range(1, 31))
         self.assertEqual(vehicle_groups([left, right], P), {10: 10, 11: 11})
+
+
+class ImageRuleInCrosswalkSpace(ImageRule):
+    """The same synthetic cases, judged in crosswalk coordinates instead of image pixels."""
+
+    def setUp(self):
+        global P
+        self._saved, P = P, replace(P, geometry="crosswalk")
+
+    def tearDown(self):
+        global P
+        P = self._saved
+
+    # These pin the image geometry's depth threshold (min_inside_person_heights) to the pixel; crosswalk coordinates use
+    # cw_on_margin instead, so the shelf they guard does not exist here.
+    _image_threshold_only = unittest.skip("pins the image geometry's depth threshold, which crosswalk coordinates do not use")
+    test_foot_just_past_the_depth_threshold_counts_as_crossing = _image_threshold_only(ImageRule.test_foot_just_past_the_depth_threshold_counts_as_crossing)
+    test_foot_just_short_of_the_depth_threshold_is_waiting = _image_threshold_only(ImageRule.test_foot_just_short_of_the_depth_threshold_is_waiting)
+    test_foot_exactly_at_the_depth_threshold_counts_as_crossing = _image_threshold_only(ImageRule.test_foot_exactly_at_the_depth_threshold_counts_as_crossing)
+
+
+# perspective crosswalk (mask px): far edge row 200 from x=150..450, near edge row 300 from x=20..600
+TRAPEZOID = [(150, 200), (450, 200), (600, 300), (20, 300)]
+
+
+def skewed_mask():
+    m = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(m, [np.array([(100, 240), (560, 150), (620, 300), (40, 330)], np.int32)], 1)
+    return m.astype(bool)
+
+
+def trapezoid_mask():
+    m = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(m, [np.array(TRAPEZOID, np.int32)], 1)
+    return m.astype(bool)
+
+
+class CrosswalkGeometry(unittest.TestCase):
+    P = Params(fps=60.0, src_size=SRC, min_seconds=0.1, geometry="crosswalk")
+
+    def test_a_car_beyond_a_sloping_far_edge_is_not_on_the_crosswalk_even_though_the_band_reaches_around_it(self):
+        # the far edge climbs to the right; the car's bottom (row 190) is ~15 px beyond it at x=280, but the old
+        # image rule sees crosswalk beside its wheel line and calls it "on"
+        car = src((200, 110, 360, 190))
+        ped = src((300, 240, 312, 285))
+        tracks = [track(1, "person", ped, range(1, 31)), track(10, "car", car, range(1, 31))]
+        self.assertEqual(run(tracks, mask=skewed_mask(), params=self.P), [])
+        self.assertEqual(len(run(tracks, mask=skewed_mask(), params=replace(self.P, geometry="image"))), 1)
+
+    def test_a_car_whose_wheel_line_is_inside_the_band_is_flagged(self):
+        car = src((250, 150, 420, 245))
+        ped = src((300, 235, 312, 268))
+        events = run([track(1, "person", ped, range(1, 31)), track(10, "car", car, range(1, 31))],
+                     mask=trapezoid_mask(), params=self.P)
+        self.assertEqual([(e.vehicle_id, e.pedestrian_state) for e in events], [(10, "on_crosswalk")])
+
+    def test_a_pedestrian_on_a_thin_far_strip_counts_as_on_it(self):
+        strip = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(strip, [np.array([(150, 150), (450, 150), (456, 158), (144, 158)], np.int32)], 1)   # 8 px thick
+        bus = src((260, 70, 420, 155))      # wheel line inside the strip
+        walker = src((190, 78, 202, 154))   # 76 px tall: ten times the strip thickness; foot 4 px inside the strip
+        tracks = [track(1, "person", walker, range(1, 31)), track(10, "bus", bus, range(1, 31))]
+        events = run(tracks, mask=strip.astype(bool), params=self.P)
+        self.assertEqual([e.pedestrian_state for e in events], ["on_crosswalk"])
+        # (the image geometry missed this at the old 0.1 depth threshold; at 0.03 its 4/76 = 0.053 counts too)
+
+    def test_a_small_piece_cut_by_the_image_edge_does_not_claim_people_and_cars_far_along_its_extension(self):
+        # coordinates taken from the real 紅燈 clip (frame 52): a right-edge piece, a pedestrian and small cars ~200 px away
+        piece = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(piece, [np.array([(562, 220), (596, 212), (639, 212), (639, 241)], np.int32)], 1)
+        ped = src((240, 133, 252, 171))       # foot (246, 171): W 0.81 on the extended band, L 1.8
+        car = src((280, 163, 290, 173))       # ground point (285, 173), the same L as the pedestrian on the extension
+        tracks = [track(1, "person", ped, range(1, 31)), track(10, "car", car, range(1, 31))]
+        self.assertEqual(run(tracks, mask=piece.astype(bool), params=self.P), [])
 
 
 def src(box):
