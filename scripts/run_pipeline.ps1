@@ -7,6 +7,8 @@ param(
     [string]$Weights = "runtime\smoke-assets\yolo26x.pt",
     [double]$Conf = 0.15,
     [int]$ImgSz = 1280,
+    [string]$Geometry = "image",   # image = 像素判斷(舊); crosswalk = 斑馬線座標判斷
+    [string[]]$Only = @(),         # 只處理檔名含這些字串的影片
     [switch]$ReuseTracks  # 追蹤結果已存在就不重跑偵測,只重跑規則與疊圖
 )
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -14,7 +16,7 @@ $modern = "$env:USERPROFILE\anaconda3\envs\traffic-modern\python.exe"
 $labeling = "$env:USERPROFILE\anaconda3\envs\traffic-labeling\python.exe"
 $log = "datasets\$Run.log"
 Start-Transcript -Path $log -Append | Out-Null
-$videos = Get-ChildItem $Folder -File | Where-Object { $_.Extension -in ".mp4", ".avi", ".mkv", ".mov" } | Sort-Object Name
+$videos = Get-ChildItem $Folder -File | Where-Object { $_.Extension -in ".mp4", ".avi", ".mkv", ".mov" } | Where-Object { $name = $_.Name; ($Only.Count -eq 0) -or (@($Only | Where-Object { $name -like "*$_*" }).Count -gt 0) } | Sort-Object Name
 $n = 0
 foreach ($video in $videos) {
     $n++
@@ -34,7 +36,7 @@ foreach ($video in $videos) {
         & $modern scripts\track_video.py --video $video.FullName --weights $Weights --conf $Conf --imgsz $ImgSz --output "$dir\tracks"
     }
     "  [3/4] 讓行人規則"
-    & $modern yield_image_rule.py --video $video.FullName --masks "$dir\seg\masks.npz" --tracks "$dir\tracks\raw_tracks.json" --output "datasets\$Run\events\$stem.jsonl"
+    & $modern yield_image_rule.py --video $video.FullName --masks "$dir\seg\masks.npz" --tracks "$dir\tracks\raw_tracks.json" --geometry $Geometry --output "datasets\$Run\events\$stem.jsonl"
     "  [4/4] 疊圖影片"
     & $modern scripts\render_overlay.py --video $video.FullName --masks "$dir\seg\masks.npz" --tracks "$dir\tracks\raw_tracks.json" --events "datasets\$Run\events\$stem.jsonl" --labels "labels\$stem.jsonl" --output "datasets\$Run\overlay\$stem.mp4"
 }
