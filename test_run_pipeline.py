@@ -3,6 +3,7 @@ import contextlib
 import io
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -260,6 +261,59 @@ class MainTest(unittest.TestCase):
         self.assertTrue(FakePopen.started[0].terminated)  # the still-running segmentation is stopped
         self.assertIn("失敗", output)
         self.assertIn("track_video.py", output)
+
+    def waits_for_b(self, script, code=0):
+        """Popen whose `script` for video a keeps running until b's segmentation has started (or gives up)."""
+
+        class Waits(FakePopen):
+            gave_up = False
+
+            def poll(self):
+                for _ in range(2000):
+                    if any("segment_crosswalk.py" in p.command[1] and "b.mp4" in " ".join(p.command)
+                           for p in FakePopen.started):
+                        return -15 if self.terminated else code
+                    if self.terminated:
+                        return -15
+                    threading.Event().wait(0.001)  # time.sleep is mocked out in these tests
+                Waits.gave_up = True
+                return code
+
+        def make(command, cwd=None):
+            mine = script in command[1] and "a.mp4" in " ".join(command)
+            return (Waits if mine else FakePopen)(command, cwd)
+        return make, Waits
+
+    def test_the_next_video_is_segmented_while_the_previous_one_finishes(self):
+        self.add_video("a.mp4")
+        self.add_video("b.mp4")
+        make, waits = self.waits_for_b("yield_image_rule.py")
+        with mock.patch("run_pipeline.subprocess.Popen", side_effect=make):
+            code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
+        self.assertEqual(code, 0)
+        self.assertFalse(waits.gave_up)  # a's rule was still running when b's segmentation started
+        self.assertEqual(len(FakePopen.started), 11)  # 2 x 5 steps + the candidate list, which comes last
+        self.assertIn("list_candidates.py", FakePopen.started[-1].command[1])
+        self.assertIn("整批", output)
+
+    def test_a_failing_later_step_stops_the_next_videos_gpu_steps(self):
+        self.add_video("a.mp4")
+        self.add_video("b.mp4")
+        make, _ = self.waits_for_b("render_overlay.py", code=1)
+
+        def popen(command, cwd=None):
+            if "b.mp4" in " ".join(command):
+                return SlowFakePopen(command, cwd)  # b's segmentation and tracking would run until stopped
+            return make(command, cwd)
+        with mock.patch("run_pipeline.subprocess.Popen", side_effect=popen):
+            code, output, _ = self.run_main(["--folder", str(self.folder), "--run", "scratch"])
+        self.assertEqual(code, 1)
+        b = [p for p in FakePopen.started if "b.mp4" in " ".join(p.command)]
+        self.assertEqual([Path(p.command[1]).name for p in b], ["segment_crosswalk.py", "track_video.py"])
+        self.assertTrue(all(p.terminated for p in b))
+        self.assertNotIn("list_candidates.py", FakePopen.scripts())
+        self.assertIn("render_overlay.py", output)
+        self.assertEqual(output.count("失敗"), 1)  # the stopped GPU steps are not reported as failures of their own
 
     def test_serial_runs_one_step_at_a_time(self):
         self.add_video("a.mp4")

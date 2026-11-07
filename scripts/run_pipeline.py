@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,8 @@ PAD_SECONDS = 2  # 證據片段在規則的證據窗前後各多留幾秒，方�
 # 互不依賴的步驟同時跑：分割與追蹤一起佔 GPU（各自的輸出與分開跑時逐位元相同，20 秒影片 109 -> 78 秒，
 # 顯存峰值約 4 GB）；疊圖與證據片段都只讀事件檔。--serial 改回一次一步（顯存不夠時用）。
 TOGETHER = ((1, 2), (3,), (4, 5))
+# 跨影片：GPU 跑下一支的分割與追蹤時，CPU 同時跑上一支的規則、疊圖與證據片段（後段一次只跑一支）。
+GPU_STEPS = (1, 2)
 # 每 0.1 秒一張遮罩：25-30 fps 影片是每 3 格（和以前一樣），60 fps 影片從每 3 格改成每 6 格，分割量減半；
 # 7 支標註影片 strict 14/17 命中不變、候選 50 -> 51，review 不變，crosswalk 幾何 11 -> 12 命中
 SEGMENT_EVERY_SECONDS = "0.1"
@@ -204,12 +207,19 @@ def step_groups(steps, serial: bool):
     return groups
 
 
-def run_together(commands, cwd, on_done=None):
-    """同時啟動所有指令並等它們結束；有一個失敗就停掉其餘的。回傳 None 或 (失敗的指令, 結束碼)。"""
+def run_together(commands, cwd, on_done=None, cancel=None):
+    """同時啟動所有指令並等它們結束；有一個失敗就停掉其餘的。回傳 None 或 (失敗的指令, 結束碼)。
+
+    cancel（threading.Event）被設起時也停掉全部，回傳 (None, None)：失敗發生在別處，已經回報過了。
+    """
     started = time.perf_counter()
     pending = [(command, subprocess.Popen(command, cwd=cwd)) for command in commands]
     failed = None
     while pending:
+        if failed is None and cancel is not None and cancel.is_set():
+            failed = (None, None)
+            for _, other in pending:
+                other.terminate()
         for item in list(pending):
             command, process = item
             code = process.poll()
@@ -298,8 +308,38 @@ def main(argv=None) -> int:
     log = None if args.dry_run else root / "datasets" / f"{args.run}.log"
     total = len(videos)
     run_dir = root / "datasets" / args.run
+    cancel = threading.Event()  # 任何一步失敗就設起，停掉另一條線上正在跑的步驟
+    lengths = []  # 每支影片的長度（秒），算整批的速度
+    batch_start = time.perf_counter()
+
+    def run_groups(groups, tag, names):
+        """依序跑幾組步驟；成功回傳 True。失敗時回報一次並設起 cancel。"""
+        for group in groups:
+            commands = [command for _, _, command in group if command is not None]
+            together = "（同時跑）" if len(commands) > 1 else ""
+            for step, description, _ in group:
+                _emit(f"  {tag} [{step}/{STEPS}] {description}{together}", log)
+            if not commands:
+                continue
+            failed = run_together(commands, root, lambda command, seconds: _emit(
+                f"        {tag} {names[tuple(command)]} 完成，{seconds:.0f} 秒", log), cancel)
+            if failed:
+                if failed[0] is not None:
+                    _emit(f"失敗：{shlex.join(failed[0])}（結束碼 {failed[1]}）", log)
+                cancel.set()
+                return False
+        return True
+
+    def finish(groups, video, tag, names, video_start):
+        if run_groups(groups, tag, names):
+            seconds = _video_seconds(video)
+            lengths.append(seconds)
+            _emit(f"  {tag} {video.name}：{speed_text(seconds, time.perf_counter() - video_start)}", log)
+
+    tail = None  # 上一支影片的後段（在另一個執行緒跑）
     for number, video in enumerate(videos, start=1):
         stem = video.stem
+        tag = f"({number}/{total})"
         if not args.dry_run:
             for directory in (
                 run_dir / stem / "seg",
@@ -319,19 +359,29 @@ def main(argv=None) -> int:
                     print(shlex.join(command))
             continue
         names = {tuple(command): f"[{step}/{STEPS}]" for step, _, command in steps if command is not None}
-        for group in step_groups(steps, args.serial):
-            commands = [command for _, _, command in group if command is not None]
-            together = "（同時跑）" if len(commands) > 1 else ""
-            for step, description, _ in group:
-                _emit(f"  [{step}/{STEPS}] {description}{together}", log)
-            if not commands:
-                continue
-            failed = run_together(commands, root, lambda command, seconds: _emit(
-                f"        {names[tuple(command)]} 完成，{seconds:.0f} 秒", log))
-            if failed:
-                _emit(f"失敗：{shlex.join(failed[0])}（結束碼 {failed[1]}）", log)
-                return 1
-        _emit(f"  {video.name}：{speed_text(_video_seconds(video), time.perf_counter() - video_start)}", log)
+        groups = step_groups(steps, args.serial)
+        gpu = [group for group in groups if any(step in GPU_STEPS for step, _, _ in group)]
+        rest = [group for group in groups if group not in gpu]
+        if not run_groups(gpu, tag, names):
+            break
+        if args.serial:  # 一次只跑一步：後段也不和下一支重疊
+            finish(rest, video, tag, names, video_start)
+            if cancel.is_set():
+                break
+            continue
+        if tail is not None:
+            tail.join()  # 後段一次只跑一支，CPU 不會被多支影片搶
+        if cancel.is_set():
+            break
+        tail = threading.Thread(target=finish, args=(rest, video, tag, names, video_start))
+        tail.start()
+    if tail is not None:
+        tail.join()
+    if cancel.is_set():
+        return 1
+    if not args.dry_run:
+        known = [seconds for seconds in lengths if seconds]
+        _emit(f"整批：{speed_text(sum(known) if len(known) == len(lengths) else None, time.perf_counter() - batch_start)}", log)
 
     command = candidate_list_command(args, root, os.environ)
     if args.dry_run:
