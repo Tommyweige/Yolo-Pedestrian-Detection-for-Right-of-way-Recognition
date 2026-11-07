@@ -141,3 +141,22 @@ Tried, both behind default-off `Params` flags: `adaptive_depth` (scale that dept
 F1 0.51 at fraction 0.5 (one extra hit), but 0.44 at 0.3 and 0.47 at 0.7/1.0 — a knife edge on one event, so NOT adopted.
 Remaining false alarms are mostly motorcycles at night near a pedestrian who is crossing; the reviewer rejected them although they look
 plausible, so the event definition (not only the code) decides what counts. No claim of improved accuracy: needs unseen clips and clips with no event.
+
+## Honest out-of-sample attempts (2026-11-07): none beat the default rule
+
+Every number here is leave-one-video-out (LOVO): a choice is made without the clip it is scored on. 17 labelled events in 7 clips,
+so one event more or less moves F1 by about 0.06. Baseline: the default rule, F1 0.471 (P 17, TP 8). That baseline is itself
+optimistic, since the defaults were tuned on these clips earlier.
+
+| attempt | tool | LOVO F1 |
+|---|---|---|
+| default rule (no re-selection) | `scripts/eval_rule.py` | 0.471 |
+| loose candidates + logistic scorer, 21 trajectory features, l2 0.3–30 | `scripts/learn_yield.py` | 0.24–0.28 |
+| stacking: `rule_fires` + entered, ped_on, v_speed (fixed a priori, one run) | ad hoc on `datasets/learn-cache-v1.json` | 0.235 |
+| rule-parameter grid (27 configs: entry_window_s × lateral_vehicle_widths × min_inside_person_heights), nested selection | `scripts/tune_rule_lovo.py` | 0.465 |
+
+The learned scorer ranks held-out candidates no better than noise (accepting every loose candidate gives 0.306), so that line was
+dropped. The grid's best in-sample config (`lateral_vehicle_widths` 2.0, `min_inside_person_heights` 0.0) reaches 0.583 on all 7
+clips, and most folds pick it, yet the held-out clips gain nothing: the extra hits it finds on some clips are paid for by extra false
+alarms on others. Defaults are therefore unchanged. What would move this: more labelled clips (especially clips with no event),
+not more tuning on these seven.
