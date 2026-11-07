@@ -52,6 +52,9 @@ class Params:
     cw_on_margin: float = 0.08               # crosswalk geometry: a foot this deep (crosswalk widths) inside either long edge is on it
     cw_wait_margin: float = 0.5              # ... and this close outside it is waiting at the edge
     cw_vehicle_margin: float = 0.05          # a vehicle's ground point this far (widths) outside the band still counts as touching it
+    surround_excludes_body: bool = False     # foot-surround test looks only left/right of the person's box: their own pixels are never crosswalk
+    adaptive_depth: bool = False             # a far/foreshortened band can be thinner than min_inside_person_heights: scale the depth need to it
+    adaptive_depth_fraction: float = 0.5     # ... to this share of the deepest crosswalk pixel in the person's columns
 
 
 def crosswalk_components(mask, params):
@@ -111,11 +114,20 @@ def person_state(box, component, distance, depth, params):
     y = int(np.clip(box[3], 0, rows - 1))
     height = box[3] - box[1]
     rx, ry = max(2, int(params.foot_window_person_heights * height)), max(1, int(0.1 * height))
-    around = component[max(0, y - ry):min(rows, y + ry + 1), max(0, x - rx):min(cols, x + rx + 1)]
+    ys = slice(max(0, y - ry), min(rows, y + ry + 1))
+    if params.surround_excludes_body:
+        x1, x2 = int(np.clip(box[0], 0, cols)), int(np.clip(box[2], 0, cols))
+        around = np.concatenate([component[ys, max(0, x1 - rx):x1].ravel(), component[ys, x2:min(cols, x2 + rx)].ravel()])
+    else:
+        around = component[ys, max(0, x - rx):min(cols, x + rx + 1)]
     if around.size and around.mean() >= params.foot_surround_fraction:
         return "on_crosswalk"
     if component[y, x]:
-        return "on_crosswalk" if depth[y, x] >= params.min_inside_person_heights * height else "waiting_at_edge"
+        need = params.min_inside_person_heights * height
+        if params.adaptive_depth:
+            columns = depth[:, max(0, int(box[0])):max(1, min(cols, int(box[2]) + 1))]
+            need = min(need, params.adaptive_depth_fraction * float(columns.max()))
+        return "on_crosswalk" if depth[y, x] >= need else "waiting_at_edge"
     if distance[y, x] <= params.edge_margin_person_heights * height:
         return "waiting_at_edge"
     return None

@@ -54,3 +54,16 @@ and thresholds mis-scaled. `--video` now reads fps/size from the file and the CL
 After the fixes: 2 of 13 matched, 9 predicted, 7 not matching a label (they may be real events the labeller did not mark: review them
 in the labeler before calling them false alarms). The fixes were chosen by looking at these same 13 events, so this is in-sample;
 a fair number needs new clips. A bigger detector (yolo26x) did not change recall.
+
+## Rule-only evaluation and two failed experiments (2026-11-07) — in-sample, 7 clips, 17 labels
+`python scripts/eval_rule.py --geometry image crosswalk [--param NAME=VALUE ...]` re-runs the rule on the stored masks/tracks and scores
+it against `labels/` (no GPU, ~30 s per geometry). Baseline at HEAD: image geometry P 0.47 / R 0.47 / F1 0.47 (8 of 17; 9 false alarms,
+8 of them rejected by the human reviewer); crosswalk geometry P 0.38 / R 0.53 / F1 0.44.
+`diagnose_misses.py` on the 9 misses: the crosswalk mask is never the blocker; the misses stop at the vehicle-person pairing or at the
+"pedestrian stepped onto the crosswalk" filter, whose 0.1-person-height depth test is impossible on a far or foreshortened band
+(a band 0.2 person heights thick has no pixel 0.1 from both edges).
+Tried, both behind default-off `Params` flags: `adaptive_depth` (scale that depth need to the local band) and `surround_excludes_body`
+(foot-surround test ignores the person's own box). `surround_excludes_body`: F1 0.42, worse (more false alarms). `adaptive_depth`:
+F1 0.51 at fraction 0.5 (one extra hit), but 0.44 at 0.3 and 0.47 at 0.7/1.0 — a knife edge on one event, so NOT adopted.
+Remaining false alarms are mostly motorcycles at night near a pedestrian who is crossing; the reviewer rejected them although they look
+plausible, so the event definition (not only the code) decides what counts. No claim of improved accuracy: needs unseen clips and clips with no event.
