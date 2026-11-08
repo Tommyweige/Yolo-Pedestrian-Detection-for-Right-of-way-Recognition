@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import clip_artifacts  # noqa: E402
 import yield_image_rule as r  # noqa: E402
 
 
@@ -24,17 +25,13 @@ def main(argv=None):
     parser.add_argument("--labels", required=True)
     parser.add_argument("--window", type=float, default=1.0)
     args = parser.parse_args(argv)
-    capture = cv2.VideoCapture(args.video)
-    fps, width, height = capture.get(cv2.CAP_PROP_FPS), int(capture.get(3)), int(capture.get(4))
-    params = r.Params(fps=fps, src_size=(width, height))
-    mask_at, _ = r.load_mask_provider(args.masks)
-    tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
-    tracks = r.merge_duplicate_tracks(tracks, params)
+    info = clip_artifacts.video_info(args.video)
+    fps, (width, height) = info.fps, info.size
+    params = r.Params(fps=fps, src_size=info.size)
+    mask_at, _ = clip_artifacts.load_masks(args.masks)
+    tracks = r.merge_duplicate_tracks(clip_artifacts.load_tracks(args.tracks), params)
     riders = r.rider_frames(tracks, params)
-    boxes = {}
-    for t in tracks:
-        for f, *b in t["boxes"]:
-            boxes.setdefault(int(f), []).append((t["id"], t["kind"], tuple(b)))
+    boxes = clip_artifacts.boxes_by_frame(tracks)
     labels = [json.loads(l) for l in Path(args.labels).read_text(encoding="utf-8").splitlines() if l.strip()]
     for label in labels:
         centre = round(label["time_s"] * fps)
@@ -47,7 +44,7 @@ def main(argv=None):
             sx, sy = mask.shape[1] / width, mask.shape[0] / height
             here = boxes.get(f, [])
             people = [(i, r.scaled(b, sx, sy)) for i, k, b in here if k == "person"]
-            vehicles = [(i, k, r.scaled(b, sx, sy)) for i, k, b in here if k in r.VEHICLE_KINDS]
+            vehicles = [(i, k, r.scaled(b, sx, sy)) for i, k, b in here if k in clip_artifacts.VEHICLE_KINDS]
             components = r.crosswalk_components(mask, params)
             counts["crosswalk"] += bool(components)
             counts["person"] += bool(people)

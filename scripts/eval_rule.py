@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
+import clip_artifacts  # noqa: E402
 import eval_events as ev  # noqa: E402
 import yield_image_rule as rule  # noqa: E402
 
@@ -22,17 +23,11 @@ KIND = "suspected_failure_to_yield"
 
 
 def run_one(video, run_dir, geometry, include_waiting=False, overrides=None):
-    import cv2
-    stem = video.stem
-    capture = cv2.VideoCapture(str(video))
-    fps, width, height = capture.get(cv2.CAP_PROP_FPS), int(capture.get(3)), int(capture.get(4))
-    capture.release()
-    params = rule.Params(fps=fps, src_size=(width, height), require_crossing=not include_waiting, geometry=geometry, **(overrides or {}))
-    mask_at, _ = rule.load_mask_provider(run_dir / stem / "seg" / "masks.npz")
-    tracks = json.loads((run_dir / stem / "tracks" / "raw_tracks.json").read_text(encoding="utf-8"))
-    last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)
-    events = rule.detect(mask_at, tracks, params, range(1, last + 1))
-    return [e.to_dict() for e in events]
+    info = clip_artifacts.video_info(video)
+    params = rule.Params(fps=info.fps, src_size=info.size, require_crossing=not include_waiting, geometry=geometry,
+                         **(overrides or {}))
+    tracks = clip_artifacts.load_tracks(run_dir / video.stem / clip_artifacts.TRACKS)
+    return [e.to_dict() for e in rule.run_on_clip(run_dir / video.stem / clip_artifacts.MASKS, tracks, params)]
 
 
 def rejected_times(labels_dir, stem):
@@ -58,20 +53,20 @@ def main(argv=None):
     for item in args.param:
         name, value = item.split("=", 1)
         overrides[name] = type(getattr(rule.Params(), name))(json.loads(value))
-    videos = sorted(p for p in (ROOT / args.videos).iterdir() if p.suffix.lower() in (".mp4", ".avi", ".mkv", ".mov"))
+    videos = sorted(p for p in (ROOT / args.videos).iterdir() if p.suffix.lower() in clip_artifacts.VIDEO_SUFFIXES)
     for geometry in args.geometry:
         pairs, lines = [], []
         rejected_fa = unreviewed_fa = 0
         for video in videos:
             label_path = labels_dir / f"{video.stem}.jsonl"
-            if not label_path.exists() or not (run_dir / video.stem / "seg" / "masks.npz").exists():
+            if not label_path.exists() or not (run_dir / video.stem / clip_artifacts.MASKS).exists():
                 continue
             predicted = [{**e, "kind": ev.ALIASES.get(e["kind"], e["kind"])} for e in run_one(video, run_dir, geometry, args.include_waiting, overrides)]
             truth = ev.load(label_path)
             if args.save_events:
                 out = ROOT / args.save_events / geometry
                 out.mkdir(parents=True, exist_ok=True)
-                (out / f"{video.stem}.jsonl").write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in predicted), encoding="utf-8")
+                clip_artifacts.write_events(out / f"{video.stem}.jsonl", predicted)
             pairs.append((predicted, truth))
             c = ev.counts(predicted, truth, args.tolerance).get(KIND, {"predicted": 0, "labelled": 0, "true_positive": 0})
             bad = rejected_times(labels_dir, video.stem)

@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import cv2  # noqa: E402
+import clip_artifacts  # noqa: E402
 import eval_events  # noqa: E402
 import yield_features  # noqa: E402
 import yield_image_rule  # noqa: E402
@@ -28,7 +28,6 @@ import yield_learn  # noqa: E402
 LOOSE = dict(require_crossing=False, lateral_vehicle_widths=3.0, min_seconds=0.05, edge_margin_person_heights=1.5)
 
 KIND = "suspected_failure_to_yield"
-VIDEO_SUFFIXES = (".mp4", ".avi", ".mkv", ".mov")
 
 
 def _frames(tracks, last_frame):
@@ -125,29 +124,25 @@ def load_entries(run_dir, videos_dir, labels_dir):
     run_dir, videos_dir, labels_dir = Path(run_dir), Path(videos_dir), Path(labels_dir)
     entries = []
     for video in sorted(videos_dir.iterdir(), key=lambda path: path.name):
-        if video.suffix.lower() not in VIDEO_SUFFIXES:
+        if video.suffix.lower() not in clip_artifacts.VIDEO_SUFFIXES:
             continue
         stem = video.stem
         label_path = labels_dir / f"{stem}.jsonl"
-        mask_path = run_dir / stem / "seg" / "masks.npz"
-        tracks_path = run_dir / stem / "tracks" / "raw_tracks.json"
+        mask_path = run_dir / stem / clip_artifacts.MASKS
+        tracks_path = run_dir / stem / clip_artifacts.TRACKS
         if not (label_path.exists() and mask_path.exists() and tracks_path.exists()):
             continue
 
-        capture = cv2.VideoCapture(str(video))
-        fps = capture.get(cv2.CAP_PROP_FPS)
-        width, height = int(capture.get(3)), int(capture.get(4))
-        capture.release()
-
-        mask_at, _ = yield_image_rule.load_mask_provider(mask_path)
-        tracks = json.loads(tracks_path.read_text(encoding="utf-8"))
+        info = clip_artifacts.video_info(video)
+        mask_at, _ = clip_artifacts.load_masks(mask_path)
+        tracks = clip_artifacts.load_tracks(tracks_path)
         truth_times = [float(row["time_s"]) for row in eval_events.load(label_path) if row["kind"] == KIND]
         entries.append({
             "name": stem,
             "mask_at": mask_at,
             "tracks": tracks,
-            "fps": fps,
-            "src_size": (width, height),
+            "fps": info.fps,
+            "src_size": info.size,
             "truth_times": truth_times,
         })
     return entries

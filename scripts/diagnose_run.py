@@ -12,12 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import cv2  # noqa: E402
+import clip_artifacts  # noqa: E402
 import diagnose_misses  # noqa: E402
 import yield_image_rule as rule  # noqa: E402
-
-VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
-
 
 def read_jsonl(path):
     path = Path(path)
@@ -26,11 +23,10 @@ def read_jsonl(path):
 
 def relaxed(video, run, stem, label_s, pad=4.0):
     """Which rule filter, once relaxed, produces a prediction within 1 s of the label? Runs the rule on label +- pad seconds."""
-    capture = cv2.VideoCapture(str(video))
-    fps, size = capture.get(cv2.CAP_PROP_FPS), (int(capture.get(3)), int(capture.get(4)))
-    capture.release()
-    mask_at, _ = rule.load_mask_provider(str(run / stem / "seg" / "masks.npz"))
-    tracks = json.loads((run / stem / "tracks" / "raw_tracks.json").read_text(encoding="utf-8"))
+    info = clip_artifacts.video_info(video)
+    fps, size = info.fps, info.size
+    mask_at, _ = clip_artifacts.load_masks(run / stem / clip_artifacts.MASKS)
+    tracks = clip_artifacts.load_tracks(run / stem / clip_artifacts.TRACKS)
     frames = range(max(1, round((label_s - pad) * fps)), round((label_s + pad) * fps) + 1)
     found = []
     for name, changes in (("base", {}), ("no_crossing_filter", {"require_crossing": False}), ("min_seconds=0", {"min_seconds": 0.0}),
@@ -51,7 +47,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     run = Path(args.run)
     summary = {}
-    for video in sorted(p for p in Path(args.videos).iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS):
+    for video in sorted(p for p in Path(args.videos).iterdir() if p.suffix.lower() in clip_artifacts.VIDEO_SUFFIXES):
         stem = video.stem
         labels_path = Path(args.labels) / f"{stem}.jsonl"
         events = read_jsonl(run / "events" / f"{stem}.jsonl")
@@ -60,8 +56,8 @@ def main(argv=None):
         if labels:
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
-                diagnose_misses.main(["--video", str(video), "--masks", str(run / stem / "seg" / "masks.npz"),
-                                      "--tracks", str(run / stem / "tracks" / "raw_tracks.json"),
+                diagnose_misses.main(["--video", str(video), "--masks", str(run / stem / clip_artifacts.MASKS),
+                                      "--tracks", str(run / stem / clip_artifacts.TRACKS),
                                       "--labels", str(labels_path), "--window", str(args.window)])
             for line in buffer.getvalue().splitlines():
                 row = json.loads(line)

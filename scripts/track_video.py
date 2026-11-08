@@ -16,6 +16,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent  # repo root, where detector_weights.py lives
 sys.path.insert(0, str(ROOT))
+import clip_artifacts  # noqa: E402
 from detector_weights import MANIFEST, resolve_weights, verify_sha256  # noqa: E402
 
 KIND_NAMES = ("person", "car", "motorcycle", "bus", "truck")  # class ids are looked up by NAME per model
@@ -89,9 +90,8 @@ def refilter(video, path):
     capture = cv2.VideoCapture(video)
     size, total = (int(capture.get(3)), int(capture.get(4))), int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     capture.release()
-    tracks = json.loads(path.read_text(encoding="utf-8"))
-    kept, removed = drop_ego_parts(tracks, size)
-    path.write_text(json.dumps(kept), encoding="utf-8")
+    kept, removed = drop_ego_parts(clip_artifacts.load_tracks(path), size)
+    clip_artifacts.save_tracks(path, kept)
     print(f"removed {removed} camera-fixed vehicle box(es) at the bottom of the frame; {len(kept)} tracks kept", flush=True)
     return 0
 
@@ -175,7 +175,7 @@ def main(argv=None):
         print(f"removed {removed} camera-fixed vehicle box(es) at the bottom of the frame (mirror/handlebar)", flush=True)
     tracks = {t["id"]: t for t in kept}
     if not args.reference_frame:
-        (output / "raw_tracks.json").write_text(json.dumps(list(tracks.values())), encoding="utf-8")
+        clip_artifacts.save_tracks(output / "raw_tracks.json", tracks.values())
         print(json.dumps({"tracks": len(tracks), "stabilised": False}))
         return 0
     # Chain frame->previous homographies into frame->reference, then map every foot point.
@@ -196,7 +196,7 @@ def main(argv=None):
                 points.append([frame, px / pw, py / pw])
         stabilised.append({"id": track["id"], "kind": track["kind"], "points": points})
     (output / "tracks.json").write_text(json.dumps(stabilised), encoding="utf-8")
-    (output / "raw_tracks.json").write_text(json.dumps(list(tracks.values())), encoding="utf-8")
+    clip_artifacts.save_tracks(output / "raw_tracks.json", tracks.values())
     (output / "stabilisation.json").write_text(json.dumps({
         "video": Path(args.video).name, "fps": fps, "frames_total": total, "reference_frame": args.reference_frame,
         "weights": Path(weights).name, "failed_frames": failures,

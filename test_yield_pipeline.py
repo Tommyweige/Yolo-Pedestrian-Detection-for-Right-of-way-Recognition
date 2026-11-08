@@ -143,22 +143,6 @@ class WorkspaceTest(unittest.TestCase):
                          Path("out") / "yield" / "影片 1")
 
 
-class ReadEventsTest(unittest.TestCase):
-    def test_events_are_read_from_the_jsonl_output(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        path = Path(tmp.name) / "events.jsonl"
-        path.write_text(json.dumps({"frame": 4, "time_s": 0.5}) + "\n", encoding="utf-8")
-        self.assertEqual(yield_pipeline.read_events(path), [{"frame": 4, "time_s": 0.5}])
-
-    def test_no_events_is_an_empty_list_not_an_error(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        path = Path(tmp.name) / "events.jsonl"
-        path.write_text("", encoding="utf-8")
-        self.assertEqual(yield_pipeline.read_events(path), [])
-
-
 class ExecuteTest(unittest.TestCase):
     def test_a_failing_step_reports_its_last_lines(self):
         with self.assertRaises(RuntimeError) as caught:

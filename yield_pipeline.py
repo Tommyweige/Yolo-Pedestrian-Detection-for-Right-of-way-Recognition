@@ -125,12 +125,6 @@ def plan(video, work, environ=None) -> list:
     ]
 
 
-def read_events(path) -> list:
-    """The rule's .jsonl output: one event per line."""
-    text = Path(path).read_text(encoding="utf-8")
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
-
-
 def execute(command, label="", cancelled=lambda: False, on_process=lambda process: None) -> str:
     """Run one step from the repository root; returns "ok" or "cancelled", raises on failure.
 

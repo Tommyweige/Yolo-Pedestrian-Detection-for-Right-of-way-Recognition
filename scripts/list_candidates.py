@@ -7,10 +7,12 @@ datasets/<run>/candidates.csv (UTF-8 with BOM so Excel shows the Chinese headers
 """
 import argparse
 import csv
-import json
 import math
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import clip_artifacts  # noqa: E402
 
 COLUMNS = ["影片", "時間", "秒", "優先", "車種", "行人狀態", "提醒", "片段", "截圖"]
 
@@ -38,10 +40,8 @@ def candidate_rows(run_dir: Path) -> list[dict]:
     run_dir = Path(run_dir)
     rows = []
     for path in sorted((run_dir / "events").glob("*.jsonl")):
-        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         found = []
-        for index, line in enumerate(lines):
-            event = json.loads(line)
+        for index, event in enumerate(clip_artifacts.read_events(path)):
             name = clip_stem(index, event)
             folder = run_dir / "evidence" / path.stem
             files = {ext: f"evidence/{path.stem}/{name}.{ext}" if (folder / f"{name}.{ext}").exists() else "" for ext in ("mp4", "png")}

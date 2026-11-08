@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+import clip_artifacts
 import yield_pipeline
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -405,7 +406,7 @@ def run_yield(videos, output, cancelled=lambda: False, on_process=lambda process
                 yield {"type": "cancelled"}
                 return
             timings[step.label] = round(time.time() - started, 1)
-        events = yield_pipeline.read_events(work / "events.jsonl")
+        events = clip_artifacts.read_events(work / "events.jsonl")
         meta = yield_pipeline.write_run_meta(work, video, events, timings, steps, info)
         for event in events:
             yield {"type": "event", "index": index, "video": str(video),

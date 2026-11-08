@@ -21,7 +21,6 @@ FEATURE_NAMES = [
 ]
 
 EPS = 1e-6
-VEHICLE_KINDS = ("car", "motorcycle", "bus", "truck")
 
 
 def index_tracks(tracks):

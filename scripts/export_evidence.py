@@ -14,6 +14,8 @@ from pathlib import Path
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import clip_artifacts  # noqa: E402
 from list_candidates import clip_stem  # noqa: E402
 
 
@@ -109,12 +111,12 @@ def main(argv=None):
     parser.add_argument("--output", required=True, help="folder for event clips")
     parser.add_argument("--pad-seconds", type=float, default=0.0, help="extra context before and after the evidence window")
     args = parser.parse_args(argv)
-    events = [json.loads(l) for l in Path(args.events).read_text(encoding="utf-8").splitlines() if l.strip()]
+    events = clip_artifacts.read_events(args.events)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
+    info = clip_artifacts.video_info(args.video)
+    fps, size, total = info.fps, info.size, info.frames or None
     capture = cv2.VideoCapture(args.video)
-    fps, size = capture.get(cv2.CAP_PROP_FPS), (int(capture.get(3)), int(capture.get(4)))
-    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) or None
     windows = clip_windows(events, round(args.pad_seconds * fps), total)
     names = [clip_stem(index, event) for index, event in enumerate(events)]
     writers, opened = {}, set()

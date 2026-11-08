@@ -18,20 +18,19 @@ comparable to each other (docs/yield-image-rule.md).
 Output is a candidate for review, not a legal finding.
 """
 import argparse
-import bisect
 import json
 import sys
 from dataclasses import dataclass, asdict
-from pathlib import Path
 
 import cv2
 import numpy as np
 
+import clip_artifacts
+from clip_artifacts import VEHICLE_KINDS
 from crosswalk_space import fit_space, merge_components
 
 RULE_VERSION = "yield-image-0.1"
 DISCLAIMER = "輔助分析，非法律違規認定"
-VEHICLE_KINDS = {"car", "motorcycle", "bus", "truck"}
 
 
 @dataclass
@@ -500,10 +499,7 @@ def detect(mask_at, tracks, params, frames):
     if params.merge_duplicates:                        # one vehicle per track, so it can be reported once
         tracks = merge_duplicate_tracks(tracks, params)
     riders = rider_frames(tracks, params) if params.rider_exclusion else {}  # a rider is not a pedestrian
-    boxes = {}
-    for t in tracks:
-        for f, *b in t["boxes"]:
-            boxes.setdefault(int(f), []).append((t["id"], t["kind"], tuple(b)))
+    boxes = clip_artifacts.boxes_by_frame(tracks)
     lengths = {t["id"]: len(t["boxes"]) for t in tracks}
     need = max(1, round(params.min_seconds * params.fps))
     window = round(params.entry_window_s * params.fps)
@@ -560,25 +556,11 @@ def detect(mask_at, tracks, params, frames):
     return events
 
 
-def load_mask_provider(path, shape=(360, 640)):
-    """mask_at(frame): the latest segmented mask at or before the frame (read-only, shared between calls)."""
-    data = np.load(path)
-    frames = sorted(int(k[1:]) for k in data.files)
-    size = shape[0] * shape[1]
-    cache = {}
-
-    def mask_at(frame):
-        index = bisect.bisect_right(frames, frame)  # a linear scan here made an hour of video quadratic
-        if index == 0:
-            return None
-        key = frames[index - 1]
-        if key not in cache:
-            cache.clear()  # frames are asked for in order, so only the current mask is worth keeping
-            mask = np.unpackbits(data[f"f{key}"])[:size].astype(bool).reshape(shape)
-            mask.setflags(write=False)
-            cache[key] = mask
-        return cache[key]
-    return mask_at, frames
+def run_on_clip(masks_path, tracks, params):
+    """The rule's events for one clip: its masks.npz and tracks, judged on every frame up to the last one with a box.
+    `params` must carry the clip's own fps and src_size (`clip_artifacts.video_info`)."""
+    mask_at, _ = clip_artifacts.load_masks(masks_path)
+    return detect(mask_at, tracks, params, range(1, clip_artifacts.last_frame(tracks) + 1))
 
 
 def main(argv=None):
@@ -600,9 +582,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     fps, width, height = args.fps, args.width, args.height
     if args.video:
-        capture = cv2.VideoCapture(args.video)
-        fps, width, height = fps or capture.get(cv2.CAP_PROP_FPS), width or int(capture.get(3)), height or int(capture.get(4))
-        capture.release()
+        info = clip_artifacts.video_info(args.video)
+        fps, width, height = fps or info.fps, width or info.width, height or info.height
     if not (fps and width and height):
         print("Give --video, or all of --fps --width --height (a wrong fps silently shifts every event time)", file=sys.stderr)
         return 2
@@ -611,12 +592,9 @@ def main(argv=None):
                     report_every_contact=not args.one_event_per_vehicle,
                     contact_dedup=args.contact_dedup,
                     geometry=args.geometry)
-    mask_at, _ = load_mask_provider(args.masks)
-    tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
-    last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)
-    events = detect(mask_at, tracks, params, range(1, last + 1))
+    events = run_on_clip(args.masks, clip_artifacts.load_tracks(args.tracks), params)
     mode = "review" if args.include_waiting else "strict"  # recorded so an events file says which filter made it
-    Path(args.output).write_text("".join(json.dumps(dict(e.to_dict(), mode=mode), ensure_ascii=False) + "\n" for e in events), encoding="utf-8")
+    clip_artifacts.write_events(args.output, [dict(e.to_dict(), mode=mode) for e in events])
     print(json.dumps({"events": len(events)}))
     return 0
 

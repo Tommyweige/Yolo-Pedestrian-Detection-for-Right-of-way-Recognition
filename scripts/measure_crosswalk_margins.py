@@ -24,13 +24,12 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
-import cv2
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import clip_artifacts  # noqa: E402
 from crosswalk_space import fit_space, merge_components  # noqa: E402
 from yield_image_rule import (  # noqa: E402
-    VEHICLE_KINDS, Params, crosswalk_components, detect, load_mask_provider, person_state_in_crosswalk, rider_frames,
+    Params, crosswalk_components, detect, person_state_in_crosswalk, rider_frames,
     scaled, vehicle_on_in_crosswalk,
 )
 
@@ -46,10 +45,7 @@ def prepare(mask_at, mask_frames, tracks, params):
 
     Riders are judged over time (`rider_frames`), the way the rule does, not frame by frame."""
     riding = rider_frames(tracks, params)
-    by_frame = {}
-    for track in tracks:
-        for frame, *box in track["boxes"]:
-            by_frame.setdefault(int(frame), []).append((track["id"], track["kind"], tuple(box)))
+    by_frame = clip_artifacts.boxes_by_frame(tracks)
     prepared = []
     for frame in range(min(mask_frames), max(mask_frames) + 1):
         mask = mask_at(frame)
@@ -60,7 +56,7 @@ def prepare(mask_at, mask_frames, tracks, params):
         boxes = []
         for track_id, kind, box in here:
             box = scaled(box, sx, sy)
-            if kind in VEHICLE_KINDS:
+            if kind in clip_artifacts.VEHICLE_KINDS:
                 boxes.append(("vehicle", box, on_mask(mask, box)))
             elif kind == "person" and frame not in riding.get(track_id, ()):
                 boxes.append(("pedestrian", box, on_mask(mask, box)))
@@ -106,17 +102,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     fps, width, height = args.fps, args.width, args.height
     if args.video:
-        capture = cv2.VideoCapture(args.video)
-        fps = fps or capture.get(cv2.CAP_PROP_FPS)
-        width = width or int(capture.get(3))
-        height = height or int(capture.get(4))
-        capture.release()
+        info = clip_artifacts.video_info(args.video)
+        fps, width, height = fps or info.fps, width or info.width, height or info.height
     if not (fps and width and height):
         print("give --video, or all of --fps --width --height", file=sys.stderr)
         return 2
     base = Params(fps=fps, src_size=(width, height), geometry="crosswalk")
-    mask_at, mask_frames = load_mask_provider(args.masks)
-    tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
+    mask_at, mask_frames = clip_artifacts.load_masks(args.masks)
+    tracks = clip_artifacts.load_tracks(args.tracks)
     frames = range(min(mask_frames), max(mask_frames) + 1)
     prepared = prepare(mask_at, mask_frames, tracks, base)
 

@@ -14,10 +14,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from yield_image_rule import load_mask_provider  # noqa: E402  the rule's own lookup, so the overlay shows its mask
+import clip_artifacts  # noqa: E402  the rule's own mask lookup, so the overlay shows its mask
 
 FONT_PATH = "C:/Windows/Fonts/msjh.ttc"
-VEHICLES = {"car", "motorcycle", "bus", "truck"}
 
 
 def text_band_height(font_size, banners, frame_height):
@@ -44,24 +43,20 @@ def main(argv=None):
     parser.add_argument("--window", type=float, default=1.0, help="seconds around an event/label that the banner stays")
     args = parser.parse_args(argv)
 
-    mask_at, _ = load_mask_provider(args.masks)
-    tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
-    by_frame = {}
-    for t in tracks:
-        for number, x1, y1, x2, y2 in t["boxes"]:
-            by_frame.setdefault(int(number), []).append((t["id"], t["kind"], x1, y1, x2, y2))
+    mask_at, _ = clip_artifacts.load_masks(args.masks)
+    by_frame = clip_artifacts.boxes_by_frame(clip_artifacts.load_tracks(args.tracks))
     events, labels = read_jsonl(args.events), read_jsonl(args.labels)
 
+    info = clip_artifacts.video_info(args.video)
+    fps, (src_w, src_h) = info.fps, info.size
     capture = cv2.VideoCapture(args.video)
-    fps = capture.get(cv2.CAP_PROP_FPS)
-    src_w, src_h = int(capture.get(3)), int(capture.get(4))
     out_w = args.width
     out_h = round(src_h * out_w / src_w / 2) * 2
     scale = out_w / src_w
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(args.output, cv2.VideoWriter_fourcc(*"mp4v"), fps, (out_w, out_h))
     font = ImageFont.truetype(FONT_PATH, max(18, out_w // 50))
-    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    total = info.frames
 
     number, shown, mask = 0, None, None
     while True:
@@ -77,8 +72,8 @@ def main(argv=None):
             shown = source
         if mask is not None:  # before the first segmented frame the rule sees no crosswalk either
             frame[mask] = (0.45 * frame[mask] + 0.55 * np.array([0, 255, 0])).astype(np.uint8)
-        for track_id, kind, x1, y1, x2, y2 in by_frame.get(number, []):
-            if kind != "person" and kind not in VEHICLES:
+        for track_id, kind, (x1, y1, x2, y2) in by_frame.get(number, []):
+            if kind != "person" and kind not in clip_artifacts.VEHICLE_KINDS:
                 continue
             colour = (255, 255, 0) if kind == "person" else (0, 215, 255)
             p1, p2 = (int(x1 * scale), int(y1 * scale)), (int(x2 * scale), int(y2 * scale))

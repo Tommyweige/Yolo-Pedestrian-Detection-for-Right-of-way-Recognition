@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import clip_artifacts  # noqa: E402
 import eval_events as ev  # noqa: E402
 import eval_rule_events as rule_eval  # noqa: E402
 import yield_image_rule as r  # noqa: E402
@@ -145,12 +146,12 @@ def main(argv=None):
             verdicts.setdefault(row["stem"], []).append(row)
     clip_inputs = []
     for path in sorted(labels_dir.glob("*.jsonl")):
-        video = rule_eval.video_of(path.stem, videos_dir)
+        video = clip_artifacts.find_video(path.stem, videos_dir)
         if video is None:
             print(f"no video for {path.stem} in {videos_dir}", file=sys.stderr)
             return 2
-        clip_inputs.append((path.stem, video, masks_root / path.stem / "seg" / "masks.npz",
-                            tracks_root / path.stem / "tracks" / "raw_tracks.json", path))
+        clip_inputs.append((path.stem, video, masks_root / path.stem / clip_artifacts.MASKS,
+                            tracks_root / path.stem / clip_artifacts.TRACKS, path))
 
     construction_rows, variant_rows = [], []
     for depth in (float(text) for text in args.depths.split(",")):

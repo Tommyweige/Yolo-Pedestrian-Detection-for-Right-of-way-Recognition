@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
+import clip_artifacts  # noqa: E402
 import eval_events as ev  # noqa: E402
 import eval_rule  # noqa: E402
 import yield_image_rule  # noqa: E402
@@ -110,10 +111,10 @@ def nested_lovo(table: dict, cfg_list: list[dict], default: dict) -> dict:
 def count_table(run_dir, videos_dir, labels_dir, cfg_list, geometry="image", tolerance=1.0, log=print) -> dict:
     run_dir, videos_dir, labels_dir = Path(run_dir), Path(videos_dir), Path(labels_dir)
     videos = sorted(p for p in videos_dir.iterdir()
-                    if p.suffix.lower() in (".mp4", ".avi", ".mkv", ".mov"))
+                    if p.suffix.lower() in clip_artifacts.VIDEO_SUFFIXES)
     videos = [video for video in videos
               if (labels_dir / f"{video.stem}.jsonl").exists()
-              and (run_dir / video.stem / "seg" / "masks.npz").exists()]
+              and (run_dir / video.stem / clip_artifacts.MASKS).exists()]
 
     table = {}
     total = len(videos) * len(cfg_list)

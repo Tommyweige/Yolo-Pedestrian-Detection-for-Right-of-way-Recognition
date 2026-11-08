@@ -29,10 +29,9 @@ import json
 import sys
 from pathlib import Path
 
-import cv2
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import clip_artifacts  # noqa: E402
 import eval_events as ev  # noqa: E402
 import yield_image_rule as r  # noqa: E402
 
@@ -40,26 +39,16 @@ SOURCES = ("manual", "confirmed_candidate")
 SENSITIVITY_S = (0.5, 1.0, 2.0, 3.0, 5.0)
 
 
-def video_of(stem, videos_dir):
-    for suffix in (".mp4", ".mov", ".mkv", ".avi"):
-        path = videos_dir / (stem + suffix)
-        if path.exists():
-            return path
-    matches = sorted(videos_dir.glob(stem + ".*"))
-    return matches[0] if matches else None
+def clip_params(video, overrides):
+    info = clip_artifacts.video_info(video)
+    return r.Params(fps=info.fps, src_size=info.size, **overrides)
 
 
 def run_clip(video, masks, tracks_path, params_overrides):
     """The rule's events for one clip, with the fps and frame size of its video."""
-    capture = cv2.VideoCapture(str(video))
-    fps = capture.get(cv2.CAP_PROP_FPS)
-    width, height = int(capture.get(3)), int(capture.get(4))
-    capture.release()
-    params = r.Params(fps=fps, src_size=(width, height), **params_overrides)
-    mask_at, _ = r.load_mask_provider(str(masks))
-    tracks = json.loads(Path(tracks_path).read_text(encoding="utf-8"))
-    last = max((int(b[0]) for t in tracks for b in t["boxes"]), default=0)
-    return params, tracks, [e.to_dict() for e in r.detect(mask_at, tracks, params, range(1, last + 1))]
+    params = clip_params(video, params_overrides)
+    tracks = clip_artifacts.load_tracks(tracks_path)
+    return params, tracks, [e.to_dict() for e in r.run_on_clip(masks, tracks, params)]
 
 
 def predicted_of(events):
@@ -164,8 +153,7 @@ def summarise(clips, tolerance):
 
 def load_events(path):
     """A saved events .jsonl (e.g. from a rule version that no longer exists in the tree)."""
-    rows = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
-    return [{**row, "contact_frames": tuple(row.get("contact_frames") or ())} for row in rows]
+    return [{**row, "contact_frames": tuple(row.get("contact_frames") or ())} for row in clip_artifacts.read_events(path)]
 
 
 def main(argv=None):
@@ -187,18 +175,18 @@ def main(argv=None):
     overrides = json.loads(args.params)
     clip_inputs = []
     for path in sorted(labels_dir.glob("*.jsonl")):
-        video = video_of(path.stem, videos_dir)
+        video = clip_artifacts.find_video(path.stem, videos_dir)
         if video is None:
             print(f"no video for {path.stem} in {videos_dir}", file=sys.stderr)
             return 2
-        clip_inputs.append((path.stem, video, masks_root / path.stem / "seg" / "masks.npz",
-                            tracks_root / path.stem / "tracks" / "raw_tracks.json", path))
+        clip_inputs.append((path.stem, video, masks_root / path.stem / clip_artifacts.MASKS,
+                            tracks_root / path.stem / clip_artifacts.TRACKS, path))
 
     clips = []
     for stem, video, masks, tracks_path, labels_path in clip_inputs:
         if args.events_root:
-            params = r.Params(fps=cv2.VideoCapture(str(video)).get(cv2.CAP_PROP_FPS), **overrides)
-            tracks = json.loads(Path(tracks_path).read_text(encoding="utf-8"))
+            params = clip_params(video, overrides)
+            tracks = clip_artifacts.load_tracks(tracks_path)
             events = load_events(Path(args.events_root) / (stem + ".jsonl"))
         else:
             params, tracks, events = run_clip(video, masks, tracks_path, overrides)

@@ -19,6 +19,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import clip_artifacts  # noqa: E402
+
 STRIPES, PLAIN = 23, 8
 MONTAGE_TILES = 30  # with --stride the montage only needs a sample
 
@@ -134,7 +137,8 @@ def main(argv=None):
             overlay[mask] = (0.45 * overlay[mask] + 0.55 * np.array([0, 0, 255])).astype(np.uint8)
             cv2.putText(overlay, f"f{number}", (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
             tiles.append(cv2.resize(overlay, (640, 360)))
-        masks[f"f{number}"] = np.packbits(cv2.resize(mask.astype(np.uint8), (640, 360), interpolation=cv2.INTER_NEAREST).astype(bool))
+        small_mask = cv2.resize(mask.astype(np.uint8), clip_artifacts.MASK_SHAPE[::-1], interpolation=cv2.INTER_NEAREST)
+        masks[number] = clip_artifacts.pack_mask(small_mask)
         rows = np.where(mask.any(axis=1))[0]
         stats.append({"frame": number, "crosswalk_pixel_fraction": float(mask.mean()), "seconds": round(elapsed, 3),
                       "lowest_crosswalk_row_fraction": float(rows.max() / mask.shape[0]) if len(rows) else None})
@@ -143,7 +147,7 @@ def main(argv=None):
         print("no frames could be read", file=sys.stderr)
         return 2
     if args.stride:
-        np.savez_compressed(out / "masks.npz", **masks)  # packed 640x360 booleans, key f<frame>
+        clip_artifacts.save_masks(out / "masks.npz", masks)
     while len(tiles) % 3:
         tiles.append(np.zeros_like(tiles[0]))
     cv2.imwrite(str(out / "montage.jpg"), np.vstack([np.hstack(tiles[i:i + 3]) for i in range(0, len(tiles), 3)]))
