@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from crosswalk_space import fit_space, merge_components  # noqa: E402
 from yield_image_rule import (  # noqa: E402
-    VEHICLE_KINDS, Params, crosswalk_components, detect, is_rider, load_mask_provider, person_state_in_crosswalk,
+    VEHICLE_KINDS, Params, crosswalk_components, detect, load_mask_provider, person_state_in_crosswalk, rider_frames,
     scaled, vehicle_on_in_crosswalk,
 )
 
@@ -42,11 +42,14 @@ GRIDS = {
 
 
 def prepare(mask_at, mask_frames, tracks, params):
-    """Per mask frame: the fitted crosswalk spaces, and each box with whether its ground point is on the mask."""
+    """Per mask frame: the fitted crosswalk spaces, and each box with whether its ground point is on the mask.
+
+    Riders are judged over time (`rider_frames`), the way the rule does, not frame by frame."""
+    riding = rider_frames(tracks, params)
     by_frame = {}
     for track in tracks:
         for frame, *box in track["boxes"]:
-            by_frame.setdefault(int(frame), []).append((track["kind"], tuple(box)))
+            by_frame.setdefault(int(frame), []).append((track["id"], track["kind"], tuple(box)))
     prepared = []
     for frame in range(min(mask_frames), max(mask_frames) + 1):
         mask = mask_at(frame)
@@ -54,13 +57,12 @@ def prepare(mask_at, mask_frames, tracks, params):
             continue
         sx, sy = mask.shape[1] / params.src_size[0], mask.shape[0] / params.src_size[1]
         here = by_frame.get(frame, [])
-        riders = [scaled(b, sx, sy) for kind, b in here if kind in params.rider_kinds]
         boxes = []
-        for kind, box in here:
+        for track_id, kind, box in here:
             box = scaled(box, sx, sy)
             if kind in VEHICLE_KINDS:
                 boxes.append(("vehicle", box, on_mask(mask, box)))
-            elif kind == "person" and not is_rider(box, riders, params):
+            elif kind == "person" and frame not in riding.get(track_id, ()):
                 boxes.append(("pedestrian", box, on_mask(mask, box)))
         components = crosswalk_components(mask, params)
         spaces = [space for space in (fit_space(c) for c in merge_components(components)) if space is not None]
