@@ -6,7 +6,9 @@ File names match scripts/list_candidates.py: event<NNN>_t<time>s.mp4 / .png, NNN
 """
 import argparse
 import json
+import queue
 import sys
+import threading
 from pathlib import Path
 
 import cv2
@@ -62,6 +64,39 @@ def frames_in(capture, spans):
             yield number, frame
 
 
+class ThreadedWriter:
+    """cv2.VideoWriter that encodes on its own thread (OpenCV releases the GIL), so overlapping clips encode in parallel.
+
+    Encoding, not decoding, is most of the cost: every frame of every clip is encoded once per clip it belongs to.
+    Frames handed to write() must not be changed afterwards.
+    """
+
+    def __init__(self, *args):
+        self._writer = cv2.VideoWriter(*args)
+        self._frames = queue.Queue(maxsize=8)
+        self._error = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while (frame := self._frames.get()) is not None:
+            if self._error is None:
+                try:
+                    self._writer.write(frame)
+                except BaseException as error:  # noqa: BLE001 - re-raised by release()
+                    self._error = error
+        self._writer.release()
+
+    def write(self, frame):
+        self._frames.put(frame)
+
+    def release(self):
+        self._frames.put(None)
+        self._thread.join()
+        if self._error is not None:
+            raise self._error
+
+
 def number_frame(frame, number):
     cv2.putText(frame, f"{number}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2)
     return frame
@@ -86,7 +121,7 @@ def main(argv=None):
 
     def open_writer(index):
         opened.add(index)
-        writers[index] = cv2.VideoWriter(str(output / f"{names[index]}.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+        writers[index] = ThreadedWriter(str(output / f"{names[index]}.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
 
     starts = {}
     for index, (lo, _) in enumerate(windows):
