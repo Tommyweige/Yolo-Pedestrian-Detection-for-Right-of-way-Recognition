@@ -8,7 +8,7 @@ counted; without that flag an empty labels file is refused (it usually means lab
 This is the EVENT level only; detection and tracking quality are reported separately.
 
 Matching, tolerance and incidents are defined once in `event_scoring.py` (ADR 0003). This CLI keeps its +-1 s default
-for scoring any events file; the fixed evaluation of the rule is scripts/eval_rule_events.py, which derives the tolerance.
+for scoring any events file; the fixed evaluation of the rule is scripts/eval_rule_events.py, which scores at the frozen 1.25 s.
 """
 import argparse
 import json

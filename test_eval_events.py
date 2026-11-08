@@ -7,7 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from event_scoring import derive_tolerance, incident_labels, matched_pairs, score  # noqa: E402
+from event_scoring import TOLERANCE_S, derive_tolerance, incident_labels, matched_pairs, score  # noqa: E402
 
 F = "suspected_failure_to_yield"
 
@@ -21,6 +21,10 @@ class FixedEvaluation(unittest.TestCase):
         self.assertEqual(tolerance, 1.25)
         self.assertEqual(basis["method"], "cluster_edge")
         self.assertEqual(basis["gap_s"], 0.867)
+
+    def test_the_frozen_tolerance_is_the_one_those_residuals_gave(self):
+        # ADR 0003 amendment (2026-11-08): the fixed evaluation keeps this value instead of re-deriving it every run
+        self.assertEqual(TOLERANCE_S, derive_tolerance([0.433, 0.2, 0.8, 0.333, 0.4, 1.667, 1.72, 1.885])[0])
 
     def test_a_smooth_spread_falls_back_to_the_documented_one_second(self):
         tolerance, basis = derive_tolerance([0.1, 0.3, 0.5, 0.7, 0.9])

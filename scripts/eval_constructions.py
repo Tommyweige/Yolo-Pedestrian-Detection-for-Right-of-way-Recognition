@@ -10,8 +10,8 @@ list with `pair` at depth 0.03; every variant and every depth stays selectable (
 - `pair`                 only repeats of the same (vehicle, pedestrian) pair collapse, so a pass touching two pedestrians
                          is two reports (the default).
 
-Everything is scored by event_scoring.summarise at one tolerance, so the rows are comparable, and one detect pass per
-depth feeds every row (the rule construction is read off the same candidate list with `yield_image_rule.one_per_vehicle`,
+Everything is scored by event_scoring.summarise at one tolerance (event_scoring.TOLERANCE_S unless given), so the rows
+are comparable, and one detect pass per depth feeds every row (the rule construction is read off the same candidate list with `yield_image_rule.one_per_vehicle`,
 the very function `detect()` applies when `report_every_contact` is False). For the dedup variants the table also reports how many
 contacts the collapse threw away that do match a judged event (`--verdicts`, the hand-judged A/B/C/D table), and how many
 of those judged events end up with no report at all: that is the recall a dedup rule costs, which the label columns only
@@ -116,7 +116,8 @@ def main(argv=None):
     parser.add_argument("--depths", default="0.03",
                         help="min_inside_person_heights values to compare (default: the rule's own 0.03)")
     parser.add_argument("--variants", default=",".join(r.CONTACT_DEDUP_VARIANTS), help="contact_dedup values to compare")
-    parser.add_argument("--tolerance", type=float, default=1.25, help="matching tolerance in seconds")
+    parser.add_argument("--tolerance", type=float, default=scoring.TOLERANCE_S,
+                        help="matching tolerance in seconds (default: the frozen ADR 0003 value)")
     parser.add_argument("--json", help="write the full table here")
     args = parser.parse_args(argv)
     print(f"rule defaults: depth {r.Params.min_inside_person_heights}, candidate-list dedup "

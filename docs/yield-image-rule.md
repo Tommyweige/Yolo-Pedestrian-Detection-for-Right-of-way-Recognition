@@ -33,8 +33,9 @@ and was reported as a pedestrian) and not per person (someone who walks across t
 is a pedestrian while walking). One vehicle tracked twice is one vehicle (`merge_duplicate_tracks`: coexisting tracks of the
 same kind with median box IoU >= 0.45, or a new id starting within 0.5 s where the old one ended with IoU >= 0.45).
 **Evaluation is fixed before the rule is tuned** (`docs/adr/0003-fixed-rule-evaluation.md`,
-`scripts/eval_rule_events.py`): the matching tolerance is derived from the labels-vs-predictions residual distribution
-(1.25 s on the current 7 clips), labels closer than the tolerance are one incident, and duplicate reports are measured on the
+`scripts/eval_rule_events.py`): the matching tolerance is 1.25 s, derived once from the labels-vs-predictions residual
+distribution and frozen on 2026-11-08 (`event_scoring.TOLERANCE_S`; each run still reports the re-derived value), labels
+closer than the tolerance are one incident, and duplicate reports are measured on the
 tracks, not on vehicle ids. Numbers from the labelled clips are in-sample.
 **Definition (user decision, 2026-10-13): a pedestrian merely waiting at the edge does not count.** A pedestrian counts only if
 their foot is at least 0.03 person heights inside the crosswalk mask at some frame of the contact with the vehicle (from its
@@ -313,7 +314,8 @@ alarms on others. Defaults are therefore unchanged. What would move this: more l
 not more tuning on these seven.
 
 Note (2026-11-08): every number in this section and the one above was scored at a fixed 1.0 s tolerance (the `--tolerance`
-default of `eval_rule.py`, `tune_rule_lovo.py` and `learn_yield.py`), not ADR 0003's 1.25 s.
+default of `eval_rule.py`, `tune_rule_lovo.py` and `learn_yield.py`, which stays 1.0 s), not ADR 0003's 1.25 s; the frozen
+1.25 s applies only to `eval_rule_events.py` and `eval_constructions.py`.
 The 27-config grid also lacked the current defaults (`lateral_vehicle_widths` 3.0, `min_inside_person_heights` 0.03);
 `tune_rule_lovo.py`'s grid now holds them (48 configs), so its numbers are not comparable with the 0.465 row.
 The `learn_yield.py` row predates a fix: its features came from the raw tracks while the rule reported merged vehicles,

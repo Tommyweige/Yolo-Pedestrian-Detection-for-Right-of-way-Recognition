@@ -19,6 +19,10 @@ import json
 from pathlib import Path
 
 KIND = "suspected_failure_to_yield"
+# The fixed evaluation's tolerance (eval_rule_events, eval_constructions), frozen on 2026-11-08 by the ADR 0003
+# amendment: derive_tolerance found 1.25 s on the residuals at the time, and re-deriving it on every run would move the
+# yardstick whenever the rule changes. derive_tolerance is still reported next to it so a drift stays visible.
+TOLERANCE_S = 1.25
 SOURCES = ("manual", "confirmed_candidate")
 ALIASES = {"vehicle_on_crosswalk_with_pedestrian": "suspected_failure_to_yield"}
 

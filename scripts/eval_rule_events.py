@@ -1,13 +1,16 @@
-"""Fixed evaluation of yield_image_rule on labelled clips: run the rule, derive the tolerance, score with ADR 0003 rules.
+"""Fixed evaluation of yield_image_rule on labelled clips: run the rule, score it with ADR 0003 rules at a frozen tolerance.
 
 Every change to the rule is judged by rerunning this script on the same clips, so a number can be compared across
 versions. It differs from scripts/eval_events.py (which scores any events file) in that it runs the rule itself and
-derives the matching tolerance from the residuals instead of taking one on the command line.
+scores at the fixed evaluation's tolerance instead of a generic one.
 
 What is fixed (docs/adr/0003-fixed-rule-evaluation.md):
-- Tolerance: `event_scoring.derive_tolerance` on the sorted |prediction - label| residuals of every label that has a
-  prediction within `--search` seconds. It is the midpoint of the first structural gap, so it is a property of how the
-  labeller and the rule time an event, not of any one result. `--tolerance` overrides it (reported as overridden).
+- Tolerance: `event_scoring.TOLERANCE_S` (1.25 s), frozen by the ADR 0003 amendment of 2026-11-08. It was derived once
+  by `event_scoring.derive_tolerance` (the midpoint of the first structural gap in the sorted |prediction - label|
+  residuals). Each run still derives it from the manual labels' residuals (every label with a prediction within
+  `--search` seconds) and reports the result under `tolerance.derived` without scoring with it, so a drift is visible
+  without moving the yardstick. `--tolerance auto` scores at the derived value, `--tolerance SECONDS` at a given one;
+  both are reported as overridden.
 - One event per incident: a label matches at most one event and vice versa, closest first (`matched_pairs`). Labels
   closer together than the tolerance are one incident (`incident_labels`), and an incident counts as a hit when any of
   its labels is matched, so recall does not depend on how often the labeller pressed the key.
@@ -20,7 +23,7 @@ What is fixed (docs/adr/0003-fixed-rule-evaluation.md):
 
 Usage:
   python scripts/eval_rule_events.py --videos DIR --masks-root DIR --tracks-root DIR --labels DIR [--json OUT]
-                                     [--params '{"merge_duplicates": false}'] [--tolerance auto|SECONDS]
+                                     [--params '{"merge_duplicates": false}'] [--tolerance frozen|auto|SECONDS]
 
 All numbers are in-sample: the clips are the ones the rule and its thresholds were developed on.
 """
@@ -64,7 +67,8 @@ def main(argv=None):
     parser.add_argument("--events-root", help="score saved <stem>.jsonl events from here instead of running the rule")
     parser.add_argument("--params", default="{}", help="JSON of yield_image_rule.Params overrides (e.g. "
                                                       "'{\"merge_duplicates\": false}')")
-    parser.add_argument("--tolerance", default="auto", help="'auto' (derived, default) or seconds")
+    parser.add_argument("--tolerance", default="frozen",
+                        help="'frozen' (event_scoring.TOLERANCE_S, default), 'auto' (derived on this run) or seconds")
     parser.add_argument("--search", type=float, default=5.0, help="a label farther than this from every event is a miss")
     parser.add_argument("--json", help="write the full report here")
     args = parser.parse_args(argv)
@@ -100,23 +104,23 @@ def main(argv=None):
     residuals = []
     for clip in clips:
         residuals += scoring.residuals(scoring.predicted_of(clip["events"]), clip["labels"], args.search)
-    if args.tolerance == "auto":
-        manual = [abs(row["delta_s"]) for row in residuals
-                  if row["delta_s"] is not None and row["label"].get("source") == "manual"]
-        every = [abs(row["delta_s"]) for row in residuals if row["delta_s"] is not None]
-        tolerance, basis = scoring.derive_tolerance(manual)
-        fallback, other = scoring.derive_tolerance(every)
-        basis = {"method": basis["method"], "below_s": basis.get("below_s"), "above_s": basis.get("above_s"),
-                 "gap_s": basis.get("gap_s"), "ratio": basis.get("ratio"), "from_labels": "manual",
-                 "sorted_abs_residuals": basis["sorted"],
-                 "all_labels": {"value_s": fallback, "method": other["method"],
-                                "sorted_abs_residuals": other["sorted"]},
-                 "overridden": False}
+    manual = [abs(row["delta_s"]) for row in residuals
+              if row["delta_s"] is not None and row["label"].get("source") == "manual"]
+    every = [abs(row["delta_s"]) for row in residuals if row["delta_s"] is not None]
+    derived_value, derived = scoring.derive_tolerance(manual)
+    all_value, all_labels = scoring.derive_tolerance(every)
+    derived = {"value_s": derived_value, "method": derived["method"], "below_s": derived.get("below_s"),
+               "above_s": derived.get("above_s"), "gap_s": derived.get("gap_s"), "ratio": derived.get("ratio"),
+               "from_labels": "manual", "sorted_abs_residuals": derived["sorted"],
+               "all_labels": {"value_s": all_value, "method": all_labels["method"],
+                              "sorted_abs_residuals": all_labels["sorted"]}}
+    if args.tolerance == "frozen":
+        tolerance, method = scoring.TOLERANCE_S, "frozen_adr_0003"
+    elif args.tolerance == "auto":
+        tolerance, method = derived_value, "derived_" + derived["method"]
     else:
-        tolerance = float(args.tolerance)
-        every = [abs(row["delta_s"]) for row in residuals if row["delta_s"] is not None]
-        basis = {"method": "given_on_command_line", "from_labels": "manual", "overridden": True,
-                 "sorted_abs_residuals": sorted(every)}
+        tolerance, method = float(args.tolerance), "given_on_command_line"
+    basis = {"method": method, "overridden": args.tolerance != "frozen", "derived": derived}
 
     report = {"in_sample": True, "tolerance": {"value_s": tolerance, **basis},
               "params": {**r.Params().__dict__, **overrides}, "clips": [], "sensitivity": []}
@@ -130,7 +134,8 @@ def main(argv=None):
 
     totals = report["totals"]
     manual, confirmed = totals["by_source"]["manual"], totals["by_source"]["confirmed_candidate"]
-    print(f"tolerance {tolerance}s ({basis['method']}, abs residuals {basis['sorted_abs_residuals']})")
+    print(f"tolerance {tolerance}s ({method}); derived from the manual residuals: {derived_value}s "
+          f"({derived['method']}, abs residuals {derived['sorted_abs_residuals']})")
     print(f"{'clip':<18}{'events':>7}{'manual':>9}{'confirmed':>11}{'incid':>8}{'redun':>7}{'FA':>4}")
     for clip in report["clips"]:
         m, c = clip["by_source"]["manual"], clip["by_source"]["confirmed_candidate"]

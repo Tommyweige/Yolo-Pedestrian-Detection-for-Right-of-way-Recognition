@@ -90,7 +90,7 @@ class Params:
                                             # construction, kept as the low-noise mode (`--one-event-per-vehicle`) and as the
                                             # comparison row in scripts/eval_constructions.py.
     contact_dedup_s: float = 1.25           # candidate list only, one pass = a vehicle's contacts chained by report time within
-                                            # this window (the evaluation's tolerance, so both constructions are scored alike).
+                                            # this window (the fixed evaluation's tolerance, frozen in ADR 0003, so both are scored alike).
                                             # 0 keeps every contact, which is how the raw candidate count is measured.
     contact_dedup: str = "pair"             # candidate list only, which contact of a pass is reported: "pair" (the default:
                                             # only repeats of the same (vehicle, pedestrian) pair collapse, so two
