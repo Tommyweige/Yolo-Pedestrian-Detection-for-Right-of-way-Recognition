@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from eval_events import aggregate, score  # noqa: E402
+from event_scoring import aggregate, score  # noqa: E402
 
 FAILURE = "suspected_failure_to_yield"
 
@@ -20,7 +20,7 @@ class EvaluationTests(unittest.TestCase):
 
     def test_pipeline_event_kind_is_scored_as_failure_to_yield(self):
         predicted = [{"kind": "vehicle_on_crosswalk_with_pedestrian", "time_s": 11.0}]
-        from eval_events import ALIASES
+        from event_scoring import ALIASES
         predicted = [{**e, "kind": ALIASES.get(e["kind"], e["kind"])} for e in predicted]
         truth = [{"kind": FAILURE, "time_s": 10.6}]
         self.assertEqual(score(predicted, truth, 1.0)[FAILURE]["true_positive"], 1)

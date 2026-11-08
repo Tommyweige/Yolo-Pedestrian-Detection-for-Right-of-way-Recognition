@@ -309,3 +309,6 @@ dropped. The grid's best in-sample config (`lateral_vehicle_widths` 2.0, `min_in
 clips, and most folds pick it, yet the held-out clips gain nothing: the extra hits it finds on some clips are paid for by extra false
 alarms on others. Defaults are therefore unchanged. What would move this: more labelled clips (especially clips with no event),
 not more tuning on these seven.
+
+Note (2026-11-08): every number in this section and the one above was scored at a fixed 1.0 s tolerance (the `--tolerance`
+default of `eval_rule.py`, `tune_rule_lovo.py` and `learn_yield.py`), not ADR 0003's 1.25 s.

@@ -10,7 +10,7 @@ list with `pair` at depth 0.03; every variant and every depth stays selectable (
 - `pair`                 only repeats of the same (vehicle, pedestrian) pair collapse, so a pass touching two pedestrians
                          is two reports (the default).
 
-Everything is scored by eval_rule_events.summarise at one tolerance, so the rows are comparable, and one detect pass per
+Everything is scored by event_scoring.summarise at one tolerance, so the rows are comparable, and one detect pass per
 depth feeds every row (the rule construction is read off the same candidate list with `yield_image_rule.one_per_vehicle`,
 the very function `detect()` applies when `report_every_contact` is False). For the dedup variants the table also reports how many
 contacts the collapse threw away that do match a judged event (`--verdicts`, the hand-judged A/B/C/D table), and how many
@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import clip_artifacts  # noqa: E402
-import eval_events as ev  # noqa: E402
+import event_scoring as scoring  # noqa: E402
 import eval_rule_events as rule_eval  # noqa: E402
 import yield_image_rule as r  # noqa: E402
 
@@ -45,7 +45,7 @@ def score(collected, events_of, tolerance):
     """Totals for one event list per clip, scored exactly as eval_rule_events does."""
     clips = [{"stem": clip["stem"], "events": [event.to_dict() for event in events_of(clip)],
               "labels": clip["labels"], "groups": clip["groups"]} for clip in collected]
-    return rule_eval.summarise(clips, tolerance)
+    return scoring.summarise(clips, tolerance)
 
 
 def as_events(records):
@@ -56,9 +56,9 @@ def as_events(records):
 def per_clip(clip, events, tolerance):
     """One clip's numbers and the manual labels it does not report, so a table row can be read clip by clip."""
     records = [event.to_dict() for event in events]
-    hits = {j for _, j in ev.matched_pairs(rule_eval.predicted_of(records), clip["labels"], tolerance)}
+    hits = {j for _, j in scoring.matched_pairs(scoring.predicted_of(records), clip["labels"], tolerance)}
     manual = [j for j, label in enumerate(clip["labels"]) if label.get("source", "manual") == "manual"]
-    incidents = ev.incident_labels(clip["labels"], tolerance)
+    incidents = scoring.incident_labels(clip["labels"], tolerance)
     return {"stem": clip["stem"], "events": len(records),
             "manual": f"{sum(j in hits for j in manual)}/{len(manual)}",
             "incidents": f"{sum(1 for group in incidents if hits & set(group))}/{len(incidents)}",
@@ -148,7 +148,7 @@ def main(argv=None):
                 video, masks, tracks_path, {"min_inside_person_heights": depth, **CONSTRUCTIONS[1][1]})
             candidates = as_events(records)
             print(f"  {stem}: {len(candidates)} contacts", flush=True)
-            collected.append({"stem": stem, "labels": ev.load(labels_path), "params": params,
+            collected.append({"stem": stem, "labels": scoring.load(labels_path), "params": params,
                               "groups": r.vehicle_groups(tracks, params), "rule": r.one_per_vehicle(candidates),
                               "candidates": candidates})
         def deduped(clip, variant):

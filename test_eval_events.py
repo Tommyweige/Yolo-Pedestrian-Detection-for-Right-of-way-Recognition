@@ -7,7 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from eval_events import derive_tolerance, incident_labels, matched_pairs, score  # noqa: E402
+from event_scoring import derive_tolerance, incident_labels, matched_pairs, score  # noqa: E402
 
 F = "suspected_failure_to_yield"
 

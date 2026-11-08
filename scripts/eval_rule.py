@@ -16,10 +16,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import clip_artifacts  # noqa: E402
-import eval_events as ev  # noqa: E402
+import event_scoring as scoring  # noqa: E402
 import yield_image_rule as rule  # noqa: E402
 
-KIND = "suspected_failure_to_yield"
+KIND = scoring.KIND
 
 
 def run_one(video, run_dir, geometry, include_waiting=False, overrides=None):
@@ -61,14 +61,14 @@ def main(argv=None):
             label_path = labels_dir / f"{video.stem}.jsonl"
             if not label_path.exists() or not (run_dir / video.stem / clip_artifacts.MASKS).exists():
                 continue
-            predicted = [{**e, "kind": ev.ALIASES.get(e["kind"], e["kind"])} for e in run_one(video, run_dir, geometry, args.include_waiting, overrides)]
-            truth = ev.load(label_path)
+            predicted = [{**e, "kind": scoring.ALIASES.get(e["kind"], e["kind"])} for e in run_one(video, run_dir, geometry, args.include_waiting, overrides)]
+            truth = scoring.load(label_path)
             if args.save_events:
                 out = ROOT / args.save_events / geometry
                 out.mkdir(parents=True, exist_ok=True)
                 clip_artifacts.write_events(out / f"{video.stem}.jsonl", predicted)
             pairs.append((predicted, truth))
-            c = ev.counts(predicted, truth, args.tolerance).get(KIND, {"predicted": 0, "labelled": 0, "true_positive": 0})
+            c = scoring.counts(predicted, truth, args.tolerance).get(KIND, {"predicted": 0, "labelled": 0, "true_positive": 0})
             bad = rejected_times(labels_dir, video.stem)
             matched = {t["time_s"] for t in truth}
             fa_times = [p["time_s"] for p in predicted if all(abs(p["time_s"] - m) > args.tolerance for m in matched)]
@@ -76,7 +76,7 @@ def main(argv=None):
             rejected_fa += rej
             unreviewed_fa += max(0, c["predicted"] - c["true_positive"]) - rej
             lines.append(f"  {video.stem[:16]:<18} predicted {c['predicted']:>2}  labelled {c['labelled']:>2}  hit {c['true_positive']:>2}")
-        total = ev.aggregate(pairs, args.tolerance).get(KIND, {})
+        total = scoring.aggregate(pairs, args.tolerance).get(KIND, {})
         print(f"== geometry={geometry}  videos={len(pairs)}  tolerance={args.tolerance}s")
         print("\n".join(lines))
         print("  TOTAL " + "  ".join(f"{k}={round(v, 3) if isinstance(v, float) else v}" for k, v in total.items()))

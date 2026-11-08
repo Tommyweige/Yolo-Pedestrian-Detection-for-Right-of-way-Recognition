@@ -6,7 +6,7 @@ import cv2, numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
 import yield_image_rule as rule
-import eval_events as ev
+import event_scoring as ev
 RUN, VIDS, LABELS = ROOT / "datasets/eval-run2", ROOT / "datasets/來源影片", ROOT / "labels"
 SHAPE = (360, 640)
 _orig_scan = rule.scan_frame

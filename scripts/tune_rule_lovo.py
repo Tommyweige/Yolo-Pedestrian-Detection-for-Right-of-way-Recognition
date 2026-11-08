@@ -17,11 +17,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import clip_artifacts  # noqa: E402
-import eval_events as ev  # noqa: E402
+import event_scoring as scoring  # noqa: E402
 import eval_rule  # noqa: E402
 import yield_image_rule  # noqa: E402
 
-KIND = "suspected_failure_to_yield"
+KIND = scoring.KIND
 DEFAULT_GRID = {"entry_window_s": [1.0, 1.5, 2.0],
                 "lateral_vehicle_widths": [1.5, 2.0, 2.5],
                 "min_inside_person_heights": [0.1, 0.05, 0.0]}
@@ -125,10 +125,10 @@ def count_table(run_dir, videos_dir, labels_dir, cfg_list, geometry="image", tol
         for video in videos:
             index += 1
             events = eval_rule.run_one(video, run_dir, geometry, overrides=cfg)
-            events = [{**event, "kind": ev.ALIASES.get(event["kind"], event["kind"])}
+            events = [{**event, "kind": scoring.ALIASES.get(event["kind"], event["kind"])}
                       for event in events]
-            truth = ev.load(labels_dir / f"{video.stem}.jsonl")
-            counts = ev.counts(events, truth, tolerance).get(
+            truth = scoring.load(labels_dir / f"{video.stem}.jsonl")
+            counts = scoring.counts(events, truth, tolerance).get(
                 KIND, {"predicted": 0, "true_positive": 0, "labelled": 0})
             table[key][video.stem] = [counts["predicted"], counts["true_positive"], counts["labelled"]]
             log(f"[{index}/{total}] {key} {video.stem[:16]} "

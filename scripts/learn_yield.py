@@ -20,14 +20,14 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import clip_artifacts  # noqa: E402
-import eval_events  # noqa: E402
+import event_scoring  # noqa: E402
 import yield_features  # noqa: E402
 import yield_image_rule  # noqa: E402
 import yield_learn  # noqa: E402
 
 LOOSE = dict(require_crossing=False, lateral_vehicle_widths=3.0, min_seconds=0.05, edge_margin_person_heights=1.5)
 
-KIND = "suspected_failure_to_yield"
+KIND = event_scoring.KIND
 
 
 def _frames(tracks, last_frame):
@@ -116,7 +116,7 @@ def baseline_score(dataset, truth, tolerance=1.0):
         predicted = [{**event, "kind": KIND} for event in dataset.get("baseline", {}).get(name, [])]
         expected = [{"kind": KIND, "time_s": float(value)} for value in truth.get(name, [])]
         pairs.append((predicted, expected))
-    return eval_events.aggregate(pairs, tolerance).get(KIND, {})
+    return event_scoring.aggregate(pairs, tolerance).get(KIND, {})
 
 
 def load_entries(run_dir, videos_dir, labels_dir):
@@ -136,7 +136,7 @@ def load_entries(run_dir, videos_dir, labels_dir):
         info = clip_artifacts.video_info(video)
         mask_at, _ = clip_artifacts.load_masks(mask_path)
         tracks = clip_artifacts.load_tracks(tracks_path)
-        truth_times = [float(row["time_s"]) for row in eval_events.load(label_path) if row["kind"] == KIND]
+        truth_times = [float(row["time_s"]) for row in event_scoring.load(label_path) if row["kind"] == KIND]
         entries.append({
             "name": stem,
             "mask_at": mask_at,
