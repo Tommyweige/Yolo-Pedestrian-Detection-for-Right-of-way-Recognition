@@ -2,15 +2,13 @@
 
 Stages counted over the window, per frame: crosswalk found -> person present -> person on/at the crosswalk (non-rider)
 -> a vehicle whose bottom edge is on the crosswalk -> vehicle and person close enough (a pair) -> pedestrian steps on within
-entry_window_s. The first stage that is zero in every frame is the blocker.
+entry_window_s. The first stage that is zero in every frame is the blocker. Positions are judged by the rule's own
+`component_geometry`, so the stages follow `Params.geometry` (the default, image pixels, unless changed).
 """
 import argparse
 import json
 import sys
 from pathlib import Path
-
-import cv2
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import clip_artifacts  # noqa: E402
@@ -45,19 +43,17 @@ def main(argv=None):
             here = boxes.get(f, [])
             people = [(i, r.scaled(b, sx, sy)) for i, k, b in here if k == "person"]
             vehicles = [(i, k, r.scaled(b, sx, sy)) for i, k, b in here if k in clip_artifacts.VEHICLE_KINDS]
-            components = r.crosswalk_components(mask, params)
+            components = r.frame_components(mask, params)
             counts["crosswalk"] += bool(components)
             counts["person"] += bool(people)
             riding = [pid for pid, seats in riders.items() if f in seats]
             at, on = False, False
             for component in components:
-                distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
-                depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
-                standing = [s for s in ((i, b, r.person_state(b, component, distance, depth, params)) for i, b in people
-                                        if i not in riding) if s[2]]
-                at |= bool(standing)
-                counts["deep"] += any(s[2] == "on_crosswalk" for s in standing)
-                on |= any(r.vehicle_on(v[2], component, params) for v in vehicles)
+                geometry = r.component_geometry(component, params)
+                states = [geometry.person_state(b) for i, b in people if i not in riding]
+                at |= any(states)
+                counts["deep"] += "on_crosswalk" in states
+                on |= any(geometry.vehicle_on(v[2]) for v in vehicles)
             counts["person_at_crosswalk"] += at
             counts["vehicle_on"] += on
             pairs, _ = r.scan_frame(mask, people, vehicles, params, riding)

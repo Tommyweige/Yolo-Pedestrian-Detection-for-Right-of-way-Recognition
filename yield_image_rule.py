@@ -29,6 +29,16 @@ import clip_artifacts
 from clip_artifacts import VEHICLE_KINDS
 from crosswalk_space import fit_space, merge_components
 
+__all__ = [
+    # running the rule
+    "Params", "Event", "RULE_VERSION", "DISCLAIMER", "CONTACT_DEDUP_VARIANTS", "detect", "run_on_clip", "main",
+    # its stages, for evaluation and diagnosis scripts
+    "merge_duplicate_tracks", "vehicle_groups", "rider_frames", "scan_frame", "dedupe_contacts", "one_per_vehicle",
+    "frame_components", "component_geometry", "scaled",
+    # the crosswalk adapter's measures, for tuning its cw_* margins (scripts/measure_crosswalk_margins.py)
+    "person_state_in_crosswalk", "vehicle_on_in_crosswalk",
+]
+
 RULE_VERSION = "yield-image-0.1"
 DISCLAIMER = "輔助分析，非法律違規認定"
 
@@ -365,55 +375,89 @@ def vehicle_on_in_crosswalk(space, box, params):
     return inside and along, lc, abs(l2 - l1)
 
 
-def scan_component_in_crosswalk(component, people, vehicles, params):
-    space = fit_space(component)
-    if space is None:
-        return None
-    standing = [(i, b, person_state_in_crosswalk(space, b, params)) for i, b in people]
-    standing = [s for s in standing if s[2]]
-    pairs = []
-    for vid, kind, vbox in vehicles:
-        on, v_centre, extent = vehicle_on_in_crosswalk(space, vbox, params)
-        if not (on and standing):
-            continue
-        for pid, pbox, state in standing:
-            length, _ = space.to_crosswalk((pbox[0] + pbox[2]) / 2, pbox[3])
-            if abs(length - v_centre) <= params.lateral_vehicle_widths * max(extent, 1e-6):
-                pairs.append((vid, pid, state))
-    return standing, pairs
+class _ImageGeometry:
+    """The crosswalk component as image pixels: foot surround and depth in person heights, wheel-line strips, and the
+    pedestrian-to-vehicle gap along the blob's principal axis."""
+
+    def __init__(self, component, params):
+        self.component, self.params = component, params
+        self.distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
+        self.depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
+        self._axis = None
+
+    def person_state(self, box):
+        return person_state(box, self.component, self.distance, self.depth, self.params)
+
+    def vehicle_on(self, box):
+        return vehicle_on(box, self.component, self.params)
+
+    def close(self, pbox, vbox):
+        if self._axis is None:
+            self._axis = crosswalk_axis(self.component)
+        gap, extent = along_gap(pbox, vbox, self._axis)
+        return gap <= self.params.lateral_vehicle_widths * extent
+
+
+class _CrosswalkGeometry:
+    """The crosswalk component as a fitted band (`crosswalk_space`): positions are (length, width) along and across it."""
+
+    def __init__(self, space, params):
+        self.space, self.params = space, params
+
+    def person_state(self, box):
+        return person_state_in_crosswalk(self.space, box, self.params)
+
+    def vehicle_on(self, box):
+        return vehicle_on_in_crosswalk(self.space, box, self.params)[0]
+
+    def close(self, pbox, vbox):
+        _, v_centre, extent = vehicle_on_in_crosswalk(self.space, vbox, self.params)
+        length, _ = self.space.to_crosswalk((pbox[0] + pbox[2]) / 2, pbox[3])
+        return abs(length - v_centre) <= self.params.lateral_vehicle_widths * max(extent, 1e-6)
+
+
+def frame_components(mask, params):
+    """The crosswalks found in one frame's mask (boolean arrays of its size). With the crosswalk geometry, pieces of one
+    crosswalk cut apart by vehicles are merged first, so each component is one band to fit."""
+    components = crosswalk_components(mask, params)
+    return merge_components(components) if params.geometry == "crosswalk" else components
+
+
+def component_geometry(component, params):
+    """How the rule judges positions on one crosswalk component: an object with
+
+    - `person_state(box)`: 'on_crosswalk', 'waiting_at_edge' or None for a person box,
+    - `vehicle_on(box)`: whether a vehicle box is on the crosswalk,
+    - `close(person_box, vehicle_box)`: whether the two are near enough along the crosswalk to pair.
+
+    `params.geometry` picks the adapter: "image" (pixels) or "crosswalk" (fitted band coordinates), and a component no
+    band fits falls back to the image adapter. Boxes are in mask pixels."""
+    if params.geometry == "crosswalk":
+        space = fit_space(component)
+        if space is not None:
+            return _CrosswalkGeometry(space, params)
+    return _ImageGeometry(component, params)
 
 
 def scan_frame(mask, people, vehicles, params, riding=()):
     """Return ([(vehicle_id, person_id, state)], {person ids deep on a crosswalk}) for one frame. Boxes in mask pixels.
 
     `riding` is the set of person ids riding a motorcycle on this frame (`rider_frames`); someone riding is not a
-    pedestrian in front of anything.
+    pedestrian in front of anything. `detect` calls this by its module name, so an experiment can replace it.
     """
-    components = crosswalk_components(mask, params)
-    if params.geometry == "crosswalk":
-        components = merge_components(components)
+    walkers = [(i, b) for i, b in people if i not in riding]
     pairs, deep = [], set()
-    for component in components:
-        if params.geometry == "crosswalk":
-            found = scan_component_in_crosswalk(component, [(i, b) for i, b in people if i not in riding], vehicles, params)
-            if found is not None:
-                standing, component_pairs = found
-                deep.update(i for i, _, state in standing if state == "on_crosswalk")
-                pairs.extend(component_pairs)
-                continue
-        distance = cv2.distanceTransform((~component).astype(np.uint8), cv2.DIST_L2, 5)
-        depth = cv2.distanceTransform(component.astype(np.uint8), cv2.DIST_L2, 5)
-        standing = [(i, b, person_state(b, component, distance, depth, params)) for i, b in people
-                    if i not in riding]
-        standing = [s for s in standing if s[2]]
+    for component in frame_components(mask, params):
+        geometry = component_geometry(component, params)
+        standing = [(i, b, state) for i, b in walkers if (state := geometry.person_state(b))]
         deep.update(i for i, _, state in standing if state == "on_crosswalk")
-        axis = crosswalk_axis(component)
+        if not standing:
+            continue
         for vid, kind, vbox in vehicles:
-            if not standing or not vehicle_on(vbox, component, params):
+            if not geometry.vehicle_on(vbox):
                 continue
             for pid, pbox, state in standing:
-                gap, extent = along_gap(pbox, vbox, axis)
-                if gap <= params.lateral_vehicle_widths * extent:
+                if geometry.close(pbox, vbox):
                     pairs.append((vid, pid, state))
     return pairs, deep
 
@@ -544,13 +588,20 @@ def detect(mask_at, tracks, params, frames):
                                 (max(1, frame - span), frame + span), bool(reasons), reasons))
     if params.report_every_contact:
         return dedupe_contacts(candidates, params)
+    return one_per_vehicle(candidates)
+
+
+def one_per_vehicle(candidates):
+    """One event per vehicle from candidates in contact-start order: the vehicle's earliest qualifying pedestrian, except
+    that a vehicle which also met a pedestrian who entered the crosswalk reports that pair, not one who only waited
+    (that only happens with the crossing filter off)."""
     events, reported = [], set()
     has_crossing = {e.vehicle_id for e in candidates if e.pedestrian_entered_crosswalk}
-    for event in candidates:  # contact-start order, so this is the vehicle's earliest qualifying pedestrian
+    for event in candidates:
         if event.vehicle_id in reported:
-            continue  # one event per vehicle
+            continue
         if not event.pedestrian_entered_crosswalk and event.vehicle_id in has_crossing:
-            continue  # crossing filter off: a vehicle that also met a crossing pedestrian reports that pair, not the waiting one
+            continue
         reported.add(event.vehicle_id)
         events.append(event)
     return events

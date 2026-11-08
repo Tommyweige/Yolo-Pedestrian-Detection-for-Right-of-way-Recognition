@@ -440,5 +440,39 @@ class TurningCamera(unittest.TestCase):
         self.assertEqual(crosswalk_axis(tilted_mask((320, 180), 90, 90, 0)), (1.0, 0.0))  # not elongated: horizontal fallback
 
 
+class GeometryInterface(unittest.TestCase):
+    """component_geometry: one interface, two adapters (image pixels, fitted crosswalk band), same answers on a plain band."""
+
+    def setUp(self):
+        import yield_image_rule as rule
+        self.rule = rule
+        self.ped, self.car_on, self.car_before = (rule.scaled(b, 1 / 3, 1 / 3) for b in (PED_ON, CAR_ON, CAR_BEFORE))
+
+    def test_both_adapters_judge_a_plain_crosswalk_the_same(self):
+        for geometry in ("image", "crosswalk"):
+            params = replace(DEFAULT, geometry=geometry)
+            [component] = self.rule.frame_components(mask_with(NEAR), params)
+            judge = self.rule.component_geometry(component, params)
+            with self.subTest(geometry=geometry):
+                self.assertEqual(judge.person_state(self.ped), "on_crosswalk")
+                self.assertTrue(judge.vehicle_on(self.car_on))
+                self.assertFalse(judge.vehicle_on(self.car_before))
+                self.assertTrue(judge.close(self.ped, self.car_on))
+
+    def test_a_component_no_band_fits_falls_back_to_the_image_adapter(self):
+        tiny = mask_with((250, 253, 300, 303))
+        params = replace(DEFAULT, geometry="crosswalk")
+        self.assertIsInstance(self.rule.component_geometry(tiny, params), self.rule._ImageGeometry)
+        self.assertIsInstance(self.rule.component_geometry(mask_with(NEAR), params), self.rule._CrosswalkGeometry)
+
+    def test_detect_still_calls_scan_frame_by_module_name_so_experiments_can_replace_it(self):
+        calls = []
+        original = self.rule.scan_frame
+        self.addCleanup(setattr, self.rule, "scan_frame", original)
+        self.rule.scan_frame = lambda *args, **kwargs: calls.append(1) or original(*args, **kwargs)
+        run([track(1, "person", PED_ON, range(1, 31)), track(10, "car", CAR_ON, range(1, 31))])
+        self.assertEqual(len(calls), 30)
+
+
 if __name__ == "__main__":
     unittest.main()

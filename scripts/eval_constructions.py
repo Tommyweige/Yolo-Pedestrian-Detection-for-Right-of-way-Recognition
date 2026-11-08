@@ -11,8 +11,8 @@ list with `pair` at depth 0.03; every variant and every depth stays selectable (
                          is two reports (the default).
 
 Everything is scored by eval_rule_events.summarise at one tolerance, so the rows are comparable, and one detect pass per
-depth feeds every row (the rule construction is read off the same candidate list: its vehicle's earliest contact, which is
-what `detect()` returns when `report_every_contact` is False). For the dedup variants the table also reports how many
+depth feeds every row (the rule construction is read off the same candidate list with `yield_image_rule.one_per_vehicle`,
+the very function `detect()` applies when `report_every_contact` is False). For the dedup variants the table also reports how many
 contacts the collapse threw away that do match a judged event (`--verdicts`, the hand-judged A/B/C/D table), and how many
 of those judged events end up with no report at all: that is the recall a dedup rule costs, which the label columns only
 show when the judged event happens to carry a human label.
@@ -67,21 +67,6 @@ def per_clip(clip, events, tolerance):
 
 def identity(event):
     return (event.vehicle_id, event.pedestrian_id, event.time_s)
-
-
-def first_per_vehicle(candidates):
-    """The rule's own construction, taken from the same candidates: each vehicle's earliest qualifying contact.
-
-    `detect()` does exactly this under `report_every_contact=False`, so one detect pass produces both the rule row and
-    the candidate rows, which keeps them on the same detection instead of two GPU runs that could drift apart.
-    """
-    events, seen = [], set()
-    for event in candidates:      # contact-start order
-        if event.vehicle_id in seen:
-            continue
-        seen.add(event.vehicle_id)
-        events.append(event)
-    return events
 
 
 def dropped_of(candidates, kept):
@@ -164,7 +149,7 @@ def main(argv=None):
             candidates = as_events(records)
             print(f"  {stem}: {len(candidates)} contacts", flush=True)
             collected.append({"stem": stem, "labels": ev.load(labels_path), "params": params,
-                              "groups": r.vehicle_groups(tracks, params), "rule": first_per_vehicle(candidates),
+                              "groups": r.vehicle_groups(tracks, params), "rule": r.one_per_vehicle(candidates),
                               "candidates": candidates})
         def deduped(clip, variant):
             return r.dedupe_contacts(clip["candidates"], _variant_params(clip, variant, args.tolerance))
