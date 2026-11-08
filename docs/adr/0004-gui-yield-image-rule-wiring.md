@@ -15,7 +15,7 @@ Rust 介面 → `desktop_bridge.py` → `detection_backend.run_yield()`，依序
 `docs/yield-image-rule.md` 的命令列一致：
 
 1. `scripts/segment_crosswalk.py --stride 3`（labeling 環境，需要 transformers；2026-11-08 起改為 `--every-seconds 0.1`，60 fps 影片每 6 幀一次）
-2. `scripts/track_video.py --conf 0.15 --imgsz 1280`（modern 環境，Ultralytics 8.4）
+2. `scripts/track_video.py --conf 0.15 --imgsz 1280`（modern 環境，Ultralytics 8.4）；2026-11-08 起加 `--weights runtime/smoke-assets/yolo26x.pt`（`TRAFFIC_DETECTOR_WEIGHTS` 可換）
 3. `yield_image_rule.py`（modern 環境，fps 與畫面尺寸由影片本身讀取）
 
 三個步驟都是**子行程**，直譯器由 `TRAFFIC_LABELING_PYTHON`、`TRAFFIC_MODERN_PYTHON` 決定（沿用

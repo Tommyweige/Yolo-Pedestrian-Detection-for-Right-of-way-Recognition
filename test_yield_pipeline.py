@@ -31,9 +31,12 @@ class PlanTest(unittest.TestCase):
         self.work = self.root / "out" / "yield" / "clip"
         self.model = self.root / "model"
         self.model.mkdir()
+        self.weights = self.root / "yolo26x.pt"
+        self.weights.write_bytes(b"")
 
     def plan(self, **environ):
         environ.setdefault("TRAFFIC_CROSSWALK_MODEL", str(self.model))
+        environ.setdefault("TRAFFIC_DETECTOR_WEIGHTS", str(self.weights))
         return yield_pipeline.plan(self.video, self.work, environ)
 
     def test_three_steps_in_order_with_the_documented_flags(self):
@@ -46,6 +49,7 @@ class PlanTest(unittest.TestCase):
                          str(self.work / "seg"))
         self.assertEqual(segmentation.command[segmentation.command.index("--model") + 1], str(self.model))
         self.assertIn("track_video.py", tracking.command[1])
+        self.assertEqual(tracking.command[tracking.command.index("--weights") + 1], str(self.weights))
         self.assertEqual(tracking.command[tracking.command.index("--conf") + 1], "0.15")
         self.assertEqual(tracking.command[tracking.command.index("--imgsz") + 1], "1280")
         self.assertEqual(tracking.command[tracking.command.index("--device") + 1], "0")
@@ -58,6 +62,17 @@ class PlanTest(unittest.TestCase):
                          str(self.work / "tracks" / "raw_tracks.json"))
         self.assertEqual(rule.command[rule.command.index("--output") + 1],
                          str(self.work / "events.jsonl"))
+
+    def test_the_detector_defaults_to_yolo26x_under_runtime(self):
+        default = self.root / "runtime" / "smoke-assets" / "yolo26x.pt"
+        default.parent.mkdir(parents=True)
+        default.write_bytes(b"")
+        self.assertEqual(yield_pipeline.detector_weights({}, root=self.root), default)
+
+    def test_missing_detector_weights_are_reported_before_anything_runs(self):
+        with self.assertRaises(FileNotFoundError) as caught:
+            yield_pipeline.detector_weights({}, root=self.root)
+        self.assertIn("TRAFFIC_DETECTOR_WEIGHTS", str(caught.exception))
 
     def test_the_rule_step_reads_the_video_for_fps_and_size(self):
         rule = self.plan()[2]
@@ -97,10 +112,13 @@ class ConstructionTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.model = Path(self.temp.name) / "model"
         self.model.mkdir()
+        self.weights = Path(self.temp.name) / "yolo26x.pt"
+        self.weights.write_bytes(b"")
 
     def rule(self):
         steps = yield_pipeline.plan("clip.mp4", Path(self.temp.name) / "work",
-                                    {"TRAFFIC_CROSSWALK_MODEL": str(self.model)})
+                                    {"TRAFFIC_CROSSWALK_MODEL": str(self.model),
+                                     "TRAFFIC_DETECTOR_WEIGHTS": str(self.weights)})
         return steps[2]
 
     def test_the_rule_step_passes_no_construction_flag(self):

@@ -90,7 +90,8 @@ python scripts/run_pipeline.py --folder path/to/videos --run my-run --device cpu
 
 ## 偵測器權重
 
-批次流程（`scripts/run_pipeline.py` 與 `.ps1`）預設用 `runtime/smoke-assets/yolo26x.pt`：同一批斑馬線遮罩下，
+批次流程（`scripts/run_pipeline.py` 與 `.ps1`）和 GUI 的「開始分析」都預設用 `runtime/smoke-assets/yolo26x.pt`
+（GUI 可用環境變數 `TRAFFIC_DETECTOR_WEIGHTS` 換掉）：同一批斑馬線遮罩下，
 yolo26x 在 strict 找到 14/17、yolo26n 只有 10/17（review 15/17 對 9/17）。n 追蹤快約 2.7 倍，但整批多半在等
 斑馬線分割，只有 60 fps 影片會明顯變快。
 

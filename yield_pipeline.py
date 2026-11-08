@@ -30,6 +30,8 @@ WORK_DIRNAME = "yield"
 MODEL_ENV = "TRAFFIC_CROSSWALK_MODEL"
 DEFAULT_MODEL = Path("runtime") / "models" / "mask2former-mapillary"
 DEVICE_ENV = "TRAFFIC_DEVICE"
+WEIGHTS_ENV = "TRAFFIC_DETECTOR_WEIGHTS"
+DEFAULT_WEIGHTS = Path("runtime") / "smoke-assets" / "yolo26x.pt"  # scripts/run_pipeline.py's default too
 # Same values as scripts/run_pipeline.py, so a GUI run and a CLI run see the same input.
 SEGMENT_EVERY_SECONDS = 0.1  # one crosswalk mask per 0.1 s: stride 3 at 25-30 fps, 6 at 60 fps
 CONF = 0.15
@@ -64,13 +66,29 @@ def crosswalk_model(environ) -> Path:
     return model
 
 
+def detector_weights(environ, root=ROOT) -> Path:
+    """The YOLO weights; TRAFFIC_DETECTOR_WEIGHTS overrides yolo26x (strict 14/17 on the labels, yolo26n 10/17)."""
+    configured = (environ or {}).get(WEIGHTS_ENV)
+    weights = Path(configured).expanduser() if configured else root / DEFAULT_WEIGHTS
+    if not weights.is_absolute():
+        weights = root / weights
+    if not weights.is_file():
+        raise FileNotFoundError(
+            "找不到偵測模型權重："
+            f"{weights}\n"
+            f"請將 yolo26x.pt 放到 {root / DEFAULT_WEIGHTS.parent}，"
+            f"或設定環境變數 {WEIGHTS_ENV} 指向權重檔。"
+        )
+    return weights
+
+
 def workspace(output, video) -> Path:
     """Where one video's intermediates and events go: <output>/yield/<video stem>/."""
     return Path(output) / WORK_DIRNAME / Path(video).stem
 
 
 def plan(video, work, environ=None) -> list:
-    """The three steps for one video, in order. Pure: only the model path is validated."""
+    """The three steps for one video, in order. Pure: only the model and weights paths are validated."""
     environ = dict(environ or {})
     video, work = Path(video), Path(work)
     modern = interpreter(environ, "TRAFFIC_MODERN_PYTHON")
@@ -86,6 +104,7 @@ def plan(video, work, environ=None) -> list:
         modern,
         str(ROOT / "scripts" / "track_video.py"),
         "--video", str(video),
+        "--weights", str(detector_weights(environ)),
         "--conf", str(CONF),
         "--imgsz", str(IMGSZ),
         "--device", environ.get(DEVICE_ENV, "0"),
