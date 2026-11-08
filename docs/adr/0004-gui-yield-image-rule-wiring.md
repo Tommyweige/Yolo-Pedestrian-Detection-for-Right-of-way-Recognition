@@ -14,7 +14,7 @@ Rust 桌面介面（`rust-ui/`，ADR 0002）的「未禮讓行人」模式原本
 Rust 介面 → `desktop_bridge.py` → `detection_backend.run_yield()`，依序跑三支既有腳本，旗標與參數與
 `docs/yield-image-rule.md` 的命令列一致：
 
-1. `scripts/segment_crosswalk.py --stride 3`（labeling 環境，需要 transformers）
+1. `scripts/segment_crosswalk.py --stride 3`（labeling 環境，需要 transformers；2026-11-08 起改為 `--every-seconds 0.1`，60 fps 影片每 6 幀一次）
 2. `scripts/track_video.py --conf 0.15 --imgsz 1280`（modern 環境，Ultralytics 8.4）
 3. `yield_image_rule.py`（modern 環境，fps 與畫面尺寸由影片本身讀取）
 

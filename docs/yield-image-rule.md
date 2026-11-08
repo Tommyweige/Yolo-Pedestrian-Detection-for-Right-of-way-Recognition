@@ -7,7 +7,7 @@ just co-occurrence in the image: no calibration, no speed, no camera-motion comp
 Pipeline (run each step in the env noted):
 ```powershell
 # labeling env (transformers): per-frame crosswalk masks, GPU, ~0.25 s/frame at 720p
-python scripts/segment_crosswalk.py --video clip.mp4 --model runtime/models/mask2former-mapillary --stride 3 --output out/seg
+python scripts/segment_crosswalk.py --video clip.mp4 --model runtime/models/mask2former-mapillary --every-seconds 0.1 --output out/seg
 # modern env: detection + ByteTrack, GPU, no stabilisation (omit --reference-frame); saves boxes
 python scripts/track_video.py --video clip.mp4 --weights runtime/smoke-assets/yolo26n.pt --output out/tracks
 # any env with numpy/opencv
@@ -164,7 +164,7 @@ scoring tolerance; "unreported" counts judged events that no surviving report ma
   dedup stated. A number quoted without its construction, dedup and depth is not comparable with any row here.
 
 **Pipeline modes (2026-11-07).** `scripts/run_pipeline.py --mode strict` (the default) runs the rule as is. `--mode review`
-adds `--include-waiting`. With the candidate-list construction and depth 0.03, strict finds 14/17 with 50 candidates. Review
+adds `--include-waiting`. With the candidate-list construction and depth 0.03, strict finds 14/17 with 51 candidates (one mask per 0.1 s; 50 with the earlier every-3rd-frame stride). Review
 finds 15/17 with 121 candidates: one more hit for 71 more reports, about one every 2 s of video, more than a human can check.
 So review is opt-in. (Before the candidate list, under one event per vehicle at depth 0.1, review was 12/17 with 39 candidates
 and strict 8/17 with 17, which is why review was briefly the default on its branch.)
