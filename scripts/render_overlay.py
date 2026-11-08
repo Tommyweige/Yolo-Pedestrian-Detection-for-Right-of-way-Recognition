@@ -1,10 +1,10 @@
 """Draw what the pipeline sees onto a video: crosswalk mask, tracked boxes, predicted events, human labels.
 
-Read-only on the source video. Overlay: green tint = crosswalk mask (nearest segmented frame), cyan box = person,
+Read-only on the source video. Overlay: green tint = crosswalk mask (the one the rule uses on that frame: the latest
+segmented frame at or before it), cyan box = person,
 yellow box = vehicle (id shown), red banner = predicted event (+-1 s), blue banner = human label (+-1 s).
 """
 import argparse
-import bisect
 import json
 import sys
 from pathlib import Path
@@ -13,19 +13,11 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from yield_image_rule import load_mask_provider  # noqa: E402  the rule's own lookup, so the overlay shows its mask
+
 FONT_PATH = "C:/Windows/Fonts/msjh.ttc"
 VEHICLES = {"car", "motorcycle", "bus", "truck"}
-
-
-def nearest_frame(frames, number):
-    """Closest segmented frame (the earlier one on a tie), by bisection over the sorted frame list."""
-    index = bisect.bisect_left(frames, number)
-    if index == 0:
-        return frames[0]
-    if index == len(frames):
-        return frames[-1]
-    before, after = frames[index - 1], frames[index]
-    return before if number - before <= after - number else after
 
 
 def text_band_height(font_size, banners, frame_height):
@@ -52,8 +44,7 @@ def main(argv=None):
     parser.add_argument("--window", type=float, default=1.0, help="seconds around an event/label that the banner stays")
     args = parser.parse_args(argv)
 
-    masks = np.load(args.masks)
-    mask_frames = sorted(int(k[1:]) for k in masks.files)
+    mask_at, _ = load_mask_provider(args.masks)
     tracks = json.loads(Path(args.tracks).read_text(encoding="utf-8"))
     by_frame = {}
     for t in tracks:
@@ -79,12 +70,13 @@ def main(argv=None):
             break
         number += 1
         frame = cv2.resize(frame, (out_w, out_h))
-        nearest = nearest_frame(mask_frames, number)
-        if nearest != shown:  # the same mask covers several frames; unpack and resize it once
-            mask = np.unpackbits(masks[f"f{nearest}"])[:360 * 640].astype(bool).reshape(360, 640)
-            mask = cv2.resize(mask.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST).astype(bool)
-            shown = nearest
-        frame[mask] = (0.45 * frame[mask] + 0.55 * np.array([0, 255, 0])).astype(np.uint8)
+        source = mask_at(number)
+        if source is not shown:  # the same mask covers several frames; resize it once
+            mask = None if source is None else cv2.resize(source.astype(np.uint8), (out_w, out_h),
+                                                          interpolation=cv2.INTER_NEAREST).astype(bool)
+            shown = source
+        if mask is not None:  # before the first segmented frame the rule sees no crosswalk either
+            frame[mask] = (0.45 * frame[mask] + 0.55 * np.array([0, 255, 0])).astype(np.uint8)
         for track_id, kind, x1, y1, x2, y2 in by_frame.get(number, []):
             if kind != "person" and kind not in VEHICLES:
                 continue
