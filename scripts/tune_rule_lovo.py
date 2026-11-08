@@ -22,9 +22,9 @@ import eval_rule  # noqa: E402
 import yield_image_rule  # noqa: E402
 
 KIND = scoring.KIND
-DEFAULT_GRID = {"entry_window_s": [1.0, 1.5, 2.0],
-                "lateral_vehicle_widths": [1.5, 2.0, 2.5],
-                "min_inside_person_heights": [0.1, 0.05, 0.0]}
+DEFAULT_GRID = {"entry_window_s": [1.0, 1.5, 2.0],                  # every axis holds the Params default, so the
+                "lateral_vehicle_widths": [1.5, 2.0, 2.5, 3.0],      # tie-break toward the defaults is a real choice
+                "min_inside_person_heights": [0.1, 0.05, 0.03, 0.0]}
 
 
 def configs(grid: dict) -> list[dict]:
