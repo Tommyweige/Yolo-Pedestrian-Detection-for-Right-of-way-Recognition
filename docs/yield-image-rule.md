@@ -9,12 +9,14 @@ Pipeline (run each step in the env noted):
 # labeling env (transformers): per-frame crosswalk masks, GPU, ~0.25 s/frame at 720p
 python scripts/segment_crosswalk.py --video clip.mp4 --model runtime/models/mask2former-mapillary --every-seconds 0.1 --output out/seg
 # modern env: detection + ByteTrack, GPU, no stabilisation (omit --reference-frame); saves boxes
-python scripts/track_video.py --video clip.mp4 --weights runtime/smoke-assets/yolo26n.pt --output out/tracks
-# any env with numpy/opencv
-python yield_image_rule.py --masks out/seg/masks.npz --tracks out/tracks/raw_tracks.json --output out/events.jsonl
+python scripts/track_video.py --video clip.mp4 --weights runtime/smoke-assets/yolo26x.pt --conf 0.15 --imgsz 1280 --output out/tracks
+# any env with numpy/opencv; fps and frame size are read from --video
+python yield_image_rule.py --video clip.mp4 --masks out/seg/masks.npz --tracks out/tracks/raw_tracks.json --output out/events.jsonl
 # low-noise mode (the old one event per vehicle, 4.4 instead of 7.1 reports per clip on the labelled clips)
 python yield_image_rule.py ... --one-event-per-vehicle
 ```
+These are the commands `scripts/run_pipeline.py` and the GUI run; their flags and defaults (sampling interval, model
+path, yolo26x, conf, imgsz) are built in one place, `yield_pipeline.segment_command` / `track_command` / `rule_command`.
 Segmentation model: facebook/mask2former-swin-large-mapillary-vistas-semantic @ 4772b6bf (safetensors SHA-256 72721afb...e2ea7).
 Mapillary Vistas is CC BY-NC-SA: research/demo use only.
 

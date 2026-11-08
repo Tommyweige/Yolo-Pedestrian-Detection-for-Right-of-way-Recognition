@@ -71,3 +71,18 @@ stdout（stderr 進執行記錄，EOF 代表程序結束，取消就是關掉 st
   事件時間不受影響。
 - 取消是關掉 bridge 的 stdin：`run_yield()` 在步驟之間與讀影格時檢查取消旗標，正在跑的子行程會被終止，已寫出的
   中間產物留在原處，下次重跑會覆蓋。
+
+## 修訂（2026-11-08）
+
+「不重用 `run_pipeline.py`」不變，但「兩條路徑共用的是同一組腳本與旗標」原本只靠兩邊各寫一份常數維持，
+已改成共用程式碼：
+
+- 分割、追蹤、規則三步的指令由 `yield_pipeline.segment_command`／`track_command`／`rule_command` 產生，
+  預設值（每 0.1 秒一張遮罩、模型路徑、yolo26x、conf 0.15、imgsz 1280、`seg/masks.npz`、`tracks/raw_tracks.json`）
+  只寫在 `yield_pipeline.py`；`run_pipeline.py` 的前三步與 `.ps1` 都用它，`.ps1` 只在使用者給了
+  `-Weights`／`-Conf`／`-ImgSz` 時才轉這三個參數。驅動程式（批次、run 資料夾、疊圖與證據片段、同時跑）仍各自一套。
+- 子行程的執行（讀輸出、取消、交出與釋放行程、結束時收尾）由 `child_process.Child` 負責，
+  `yield_pipeline.execute` 與舊偵測路徑 `run_detection` 共用；`run_pipeline.run_together` 不在此列，
+  它同時跑多個指令、輸出直接進主控台。
+- 介面仍每次重算三步。命令列重跑同一個 run 時，既有遮罩只在取樣間隔與現在相同時沿用（間隔由遮罩幀號讀出），
+  不同就重新分割；以前不論間隔一律沿用。

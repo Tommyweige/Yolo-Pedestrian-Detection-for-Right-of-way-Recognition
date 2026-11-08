@@ -2,7 +2,9 @@
 
 Runs in the modern env (YOLO26 + built-in ByteTrack). For a moving camera (dashcam, helmet cam) the
 frame-to-frame homography is estimated from optical-flow-tracked road features outside detected boxes and chained to a
-reference frame, so every track point is expressed in the reference image. The output feeds yield_rules.py.
+reference frame, so every track point is expressed in the reference image. raw_tracks.json (format in
+clip_artifacts.py) feeds yield_image_rule.py; the stabilised points are only used by the experimental world rule
+(yield_rules.py).
 Chained homographies drift over long clips and assume mostly planar/far content; check the overlay.
 """
 import argparse
