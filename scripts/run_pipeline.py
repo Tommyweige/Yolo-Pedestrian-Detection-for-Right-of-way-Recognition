@@ -24,6 +24,7 @@ TOGETHER = ((1, 2), (3,), (4, 5))
 GPU_STEPS = (1, 2)
 # 每 0.1 秒一張遮罩：25-30 fps 影片是每 3 格（和以前一樣），60 fps 影片從每 3 格改成每 6 格，分割量減半；
 # 7 支標註影片 strict 14/17 命中不變、候選 50 -> 51，review 不變，crosswalk 幾何 11 -> 12 命中
+DEFAULT_WEIGHTS = "runtime/smoke-assets/yolo26x.pt"  # same default as scripts/run_pipeline.ps1
 SEGMENT_EVERY_SECONDS = "0.1"
 
 
@@ -245,7 +246,11 @@ def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description="批次跑斑馬線分割、追蹤、讓行人規則與疊圖。")
     parser.add_argument("--folder", default="datasets/來源影片")
     parser.add_argument("--run", default="eval-run2")
-    parser.add_argument("--weights", default=None)
+    parser.add_argument(
+        "--weights",
+        default=DEFAULT_WEIGHTS,
+        help="偵測模型（預設 yolo26x：同一批遮罩下 strict 14/17，yolo26n 只有 10/17；追蹤較慢，但整批多半在等分割）",
+    )
     parser.add_argument("--conf", type=float, default=0.15)
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--device", default="0")

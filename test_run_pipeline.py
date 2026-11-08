@@ -136,6 +136,11 @@ class BuildCommandsTest(unittest.TestCase):
     def test_strict_mode_is_the_default_and_review_mode_adds_waiting_pedestrians(self):
         # strict: the rule's candidate list already finds 14/17 with 50 reports; review adds one hit for 71 more reports
         self.assertEqual(run_pipeline._parse_args([]).mode, "strict")
+
+    def test_default_detector_is_yolo26x_like_the_powershell_wrapper(self):
+        self.assertEqual(run_pipeline._parse_args([]).weights, "runtime/smoke-assets/yolo26x.pt")
+        ps1 = (Path(__file__).resolve().parent / "scripts" / "run_pipeline.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn('$Weights = "runtime\smoke-assets\yolo26x.pt"', ps1)
         self.make_masks()
         rule = [command for command in self.commands() if "yield_image_rule.py" in command[1]][0]
         self.assertNotIn("--include-waiting", rule)
