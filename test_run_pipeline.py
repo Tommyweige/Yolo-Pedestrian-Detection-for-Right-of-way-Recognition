@@ -10,6 +10,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
 import run_pipeline  # noqa: E402
+import clip_artifacts  # noqa: E402
+import yield_pipeline  # noqa: E402
 
 
 def make_args(**overrides):
@@ -137,10 +139,13 @@ class BuildCommandsTest(unittest.TestCase):
         # strict: the rule's candidate list already finds 14/17 with 50 reports; review adds one hit for 71 more reports
         self.assertEqual(run_pipeline._parse_args([]).mode, "strict")
 
-    def test_default_detector_is_yolo26x_like_the_powershell_wrapper(self):
+    def test_default_detector_is_yolo26x_and_the_powershell_wrapper_does_not_redefine_it(self):
         self.assertEqual(run_pipeline._parse_args([]).weights, "runtime/smoke-assets/yolo26x.pt")
+        args = run_pipeline._parse_args([])
+        self.assertEqual((args.conf, args.imgsz), (yield_pipeline.CONF, yield_pipeline.IMGSZ))
         ps1 = (Path(__file__).resolve().parent / "scripts" / "run_pipeline.ps1").read_text(encoding="utf-8-sig")
-        self.assertIn('$Weights = "runtime\smoke-assets\yolo26x.pt"', ps1)
+        self.assertNotIn("yolo26x", ps1)
+        self.assertIn('$PSBoundParameters.ContainsKey("Weights")', ps1)
         self.make_masks()
         rule = [command for command in self.commands() if "yield_image_rule.py" in command[1]][0]
         self.assertNotIn("--include-waiting", rule)
@@ -360,6 +365,61 @@ class MainTest(unittest.TestCase):
         self.assertIn("全部完成", text)
         self.assertIn("candidates.csv", text)
         self.assertIn("處理", text)  # the per-video processing time goes into the log
+
+
+class StaleMasksTest(unittest.TestCase):
+    """Masks already in the run are reused only when they were sampled at the interval a new run would use."""
+
+    def setUp(self):
+        import cv2
+        import numpy as np
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.video = self.root / "datasets" / "來源影片" / "clip.mp4"
+        self.video.parent.mkdir(parents=True)
+        writer = cv2.VideoWriter(str(self.video), cv2.VideoWriter_fourcc(*"mp4v"), 60, (64, 48))
+        for _ in range(13):
+            writer.write(np.zeros((48, 64, 3), np.uint8))
+        writer.release()
+        self.masks = self.root / "datasets" / "eval-run2" / "clip" / clip_artifacts.MASKS
+        self.masks.parent.mkdir(parents=True)
+        self.empty = clip_artifacts.pack_mask(np.zeros(clip_artifacts.MASK_SHAPE, bool))
+
+    def segment_steps(self, frames):
+        clip_artifacts.save_masks(self.masks, {frame: self.empty for frame in frames})
+        commands = run_pipeline.build_commands(self.video, make_args(), self.root, {})
+        return [command for command in commands if "segment_crosswalk.py" in command[1]]
+
+    def test_masks_at_the_current_interval_are_reused(self):
+        self.assertEqual(self.segment_steps([1, 7, 13]), [])  # 60 fps, one mask per 0.1 s = every 6th frame
+
+    def test_masks_at_another_interval_are_segmented_again(self):
+        segment = self.segment_steps([1, 4, 7, 10, 13])  # the old fixed stride 3
+        self.assertEqual(len(segment), 1)
+        self.assertEqual(segment[0][segment[0].index("--output") + 1], str(self.masks.parent))
+        reason = yield_pipeline.stale_masks(self.masks, self.video)
+        self.assertIn("每 3 格", reason)
+        self.assertIn("每 6 格", reason)
+
+    def test_a_single_mask_cannot_be_judged_and_is_reused(self):
+        self.assertEqual(self.segment_steps([1]), [])
+
+
+class SharedStepsTest(unittest.TestCase):
+    """The batch driver and the GUI build segmentation, tracking and the rule from the same yield_pipeline commands."""
+
+    def test_the_cli_steps_carry_the_gui_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = root / "clip.mp4"
+            segment, track, rule = run_pipeline.build_commands(video, make_args(weights="w.pt"), root, {})[:3]
+            work = root / "datasets" / "eval-run2" / "clip"
+            events = root / "datasets" / "eval-run2" / "events" / "clip.jsonl"
+            self.assertEqual(tuple(segment), yield_pipeline.segment_command(
+                sys.executable, video, yield_pipeline.DEFAULT_MODEL.as_posix(), work / "seg"))
+            self.assertEqual(tuple(track), yield_pipeline.track_command(sys.executable, video, "w.pt", work / "tracks"))
+            self.assertEqual(tuple(rule), yield_pipeline.rule_command(sys.executable, video, work, events, "image"))
 
 
 if __name__ == "__main__":

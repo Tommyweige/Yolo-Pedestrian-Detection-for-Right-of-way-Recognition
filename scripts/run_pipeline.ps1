@@ -4,9 +4,9 @@
 param(
     [string]$Folder = "datasets\來源影片",
     [string]$Run = "eval-run2",
-    [string]$Weights = "runtime\smoke-assets\yolo26x.pt",
-    [double]$Conf = 0.15,
-    [int]$ImgSz = 1280,
+    [string]$Weights,              # 以下三個沒給就不轉,預設值只寫在 yield_pipeline.py(GUI 與 run_pipeline.py 共用)
+    [double]$Conf,
+    [int]$ImgSz,
     [string]$Geometry = "image",   # image = 像素判斷(舊); crosswalk = 斑馬線座標判斷
     [ValidateSet("review", "strict")]
     [string]$Mode = "strict",      # strict = 只報上了斑馬線的行人(預設); review = 路緣等待者也列為候選,候選多很多
@@ -18,9 +18,10 @@ param(
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $env:TRAFFIC_MODERN_PYTHON = "$env:USERPROFILE\anaconda3\envs\traffic-modern\python.exe"
 $env:TRAFFIC_LABELING_PYTHON = "$env:USERPROFILE\anaconda3\envs\traffic-labeling\python.exe"
-$arguments = @("scripts\run_pipeline.py", "--folder", $Folder, "--run", $Run, "--weights", $Weights,
-    "--conf", $Conf.ToString([Globalization.CultureInfo]::InvariantCulture), "--imgsz", $ImgSz,
-    "--geometry", $Geometry, "--mode", $Mode)
+$arguments = @("scripts\run_pipeline.py", "--folder", $Folder, "--run", $Run, "--geometry", $Geometry, "--mode", $Mode)
+if ($PSBoundParameters.ContainsKey("Weights")) { $arguments += @("--weights", $Weights) }
+if ($PSBoundParameters.ContainsKey("Conf")) { $arguments += @("--conf", $Conf.ToString([Globalization.CultureInfo]::InvariantCulture)) }
+if ($PSBoundParameters.ContainsKey("ImgSz")) { $arguments += @("--imgsz", $ImgSz) }
 if ($Only.Count -gt 0) { $arguments += @("--only") + $Only }
 if ($ReuseTracks) { $arguments += "--reuse-tracks" }
 if ($Serial) { $arguments += "--serial" }

@@ -41,9 +41,7 @@ def sampled_frames(capture, numbers):
         yield number, frame
 
 
-def stride_for(fps, seconds):
-    """Frames between masks so one is taken every `seconds` (rounded, at least 1; unknown fps -> every frame)."""
-    return max(1, int(fps * seconds + 0.5))
+stride_for = clip_artifacts.stride_for
 
 
 def prefetch(items, depth=8):

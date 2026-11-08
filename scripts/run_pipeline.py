@@ -14,6 +14,10 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import clip_artifacts  # noqa: E402
+import yield_pipeline as pipeline  # noqa: E402  segment/track/rule flags and defaults, shared with the GUI
+
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov"}
 STEPS = 5
 PAD_SECONDS = 2  # 證據片段在規則的證據窗前後各多留幾秒，方便人工判斷前因後果
@@ -22,10 +26,8 @@ PAD_SECONDS = 2  # 證據片段在規則的證據窗前後各多留幾秒，方�
 TOGETHER = ((1, 2), (3,), (4, 5))
 # 跨影片：GPU 跑下一支的分割與追蹤時，CPU 同時跑上一支的規則、疊圖與證據片段（後段一次只跑一支）。
 GPU_STEPS = (1, 2)
-# 每 0.1 秒一張遮罩：25-30 fps 影片是每 3 格（和以前一樣），60 fps 影片從每 3 格改成每 6 格，分割量減半；
-# 7 支標註影片 strict 14/17 命中不變、候選 50 -> 51，review 不變，crosswalk 幾何 11 -> 12 命中
-DEFAULT_WEIGHTS = "runtime/smoke-assets/yolo26x.pt"  # same default as scripts/run_pipeline.ps1
-SEGMENT_EVERY_SECONDS = "0.1"
+# 分割的取樣間隔、模型路徑、偵測權重、conf、imgsz 都由 yield_pipeline 定義（GUI 與這裡共用）
+DEFAULT_WEIGHTS = pipeline.DEFAULT_WEIGHTS.as_posix()
 
 
 def build_commands(video: Path, args, root: Path, environ) -> list[list[str]]:
@@ -40,8 +42,8 @@ def _plan(video: Path, args, root: Path, environ):
     run = getattr(args, "run", "eval-run2")
     stem = video.stem
     work = root / "datasets" / run / stem
-    masks = work / "seg" / "masks.npz"
-    tracks = work / "tracks" / "raw_tracks.json"
+    masks = work / clip_artifacts.MASKS
+    tracks = work / clip_artifacts.TRACKS
     events = root / "datasets" / run / "events" / f"{stem}.jsonl"
     overlay = root / "datasets" / run / "overlay" / f"{stem}.mp4"
     evidence = root / "datasets" / run / "evidence" / stem
@@ -50,27 +52,12 @@ def _plan(video: Path, args, root: Path, environ):
     modern = _python(environ, "TRAFFIC_MODERN_PYTHON")
     labeling = _python(environ, "TRAFFIC_LABELING_PYTHON")
 
-    if masks.exists():
+    stale = pipeline.stale_masks(masks, video) if masks.exists() else None
+    if masks.exists() and not stale:
         steps = [(1, "沿用既有斑馬線遮罩", None)]
     else:
-        steps = [
-            (
-                1,
-                "斑馬線分割 (GPU)",
-                [
-                    labeling,
-                    str(root / "scripts" / "segment_crosswalk.py"),
-                    "--video",
-                    str(video),
-                    "--model",
-                    "runtime/models/mask2former-mapillary",
-                    "--every-seconds",
-                    SEGMENT_EVERY_SECONDS,
-                    "--output",
-                    str(work / "seg"),
-                ],
-            )
-        ]
+        segment = pipeline.segment_command(labeling, video, pipeline.DEFAULT_MODEL.as_posix(), masks.parent)
+        steps = [(1, f"斑馬線分割 (GPU){'：' + stale + '，重新分割' if stale else ''}", list(segment))]
 
     if getattr(args, "reuse_tracks", False) and tracks.exists():
         steps.append(
@@ -88,48 +75,15 @@ def _plan(video: Path, args, root: Path, environ):
             )
         )
     else:
-        track = [
-            modern,
-            str(root / "scripts" / "track_video.py"),
-            "--video",
-            str(video),
-        ]
-        if getattr(args, "weights", None):
-            track += ["--weights", str(args.weights)]
-        track += [
-            "--conf",
-            str(getattr(args, "conf", 0.15)),
-            "--imgsz",
-            str(getattr(args, "imgsz", 1280)),
-            "--device",
-            str(getattr(args, "device", "0")),
-            "--output",
-            str(work / "tracks"),
-        ]
-        steps.append((2, "偵測與追蹤", track))
+        track = pipeline.track_command(modern, video, getattr(args, "weights", None), tracks.parent,
+                                       getattr(args, "device", "0"), getattr(args, "conf", pipeline.CONF),
+                                       getattr(args, "imgsz", pipeline.IMGSZ))
+        steps.append((2, "偵測與追蹤", list(track)))
 
     rule_label = "含路緣等待者" if mode == "review" else "只報上了斑馬線的行人"
-    steps.append(
-        (
-            3,
-            f"讓行人規則（{getattr(args, 'geometry', 'image')} 幾何，{rule_label}）",
-            [
-                modern,
-                str(root / "yield_image_rule.py"),
-                "--video",
-                str(video),
-                "--masks",
-                str(masks),
-                "--tracks",
-                str(tracks),
-                "--geometry",
-                str(getattr(args, "geometry", "image")),
-                "--output",
-                str(events),
-            ]
-            + (["--include-waiting"] if mode == "review" else []),
-        )
-    )
+    geometry = getattr(args, "geometry", "image")
+    rule = pipeline.rule_command(modern, video, work, events, geometry, include_waiting=mode == "review")
+    steps.append((3, f"讓行人規則（{geometry} 幾何，{rule_label}）", list(rule)))
     steps.append(
         (
             4,
@@ -251,8 +205,8 @@ def _parse_args(argv=None):
         default=DEFAULT_WEIGHTS,
         help="偵測模型（預設 yolo26x：同一批遮罩下 strict 14/17，yolo26n 只有 10/17；追蹤較慢，但整批多半在等分割）",
     )
-    parser.add_argument("--conf", type=float, default=0.15)
-    parser.add_argument("--imgsz", type=int, default=1280)
+    parser.add_argument("--conf", type=float, default=pipeline.CONF)
+    parser.add_argument("--imgsz", type=int, default=pipeline.IMGSZ)
     parser.add_argument("--device", default="0")
     parser.add_argument("--reuse-tracks", action="store_true")
     parser.add_argument(

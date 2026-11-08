@@ -64,6 +64,24 @@ def load_masks(path):
     return mask_at, frames
 
 
+def stride_for(fps, seconds):
+    """Frames between masks so one is taken every `seconds` (rounded, at least 1; unknown fps -> every frame)."""
+    return max(1, int((fps or 0) * seconds + 0.5))
+
+
+def mask_stride(path):
+    """Frames between the first two segmented frames of a masks.npz, or None (one mask, or not a readable file).
+
+    segment_crosswalk.py --stride/--every-seconds segments frames 1, 1+stride, ..., so this is the sampling interval
+    the masks were made with; a run can compare it with the one it would use now instead of trusting old masks."""
+    try:
+        with np.load(path) as data:
+            frames = sorted(int(key[1:]) for key in data.files)
+    except (OSError, ValueError, EOFError):  # missing, empty or not an npz
+        return None
+    return frames[1] - frames[0] if len(frames) > 1 else None
+
+
 def load_tracks(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 

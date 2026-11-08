@@ -57,6 +57,23 @@ class PrefetchTest(unittest.TestCase):
             list(seg.prefetch(broken()))
 
 
+class MaskStrideTest(unittest.TestCase):
+    def test_the_interval_is_read_back_from_the_mask_frame_numbers(self):
+        import tempfile
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import clip_artifacts
+        empty = clip_artifacts.pack_mask(np.zeros(clip_artifacts.MASK_SHAPE, bool))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "masks.npz"
+            clip_artifacts.save_masks(path, {frame: empty for frame in range(1, 20, 6)})
+            self.assertEqual(clip_artifacts.mask_stride(path), 6)
+            clip_artifacts.save_masks(path, {1: empty})
+            self.assertIsNone(clip_artifacts.mask_stride(path))
+            path.write_bytes(b"")
+            self.assertIsNone(clip_artifacts.mask_stride(path))
+            self.assertIsNone(clip_artifacts.mask_stride(Path(tmp) / "missing.npz"))
+
+
 class StrideTest(unittest.TestCase):
     def test_one_mask_per_tenth_of_a_second_rounded(self):
         self.assertEqual([seg.stride_for(fps, 0.1) for fps in (25, 29.97, 30, 50, 59.94, 60, 24)], [3, 3, 3, 5, 6, 6, 2])

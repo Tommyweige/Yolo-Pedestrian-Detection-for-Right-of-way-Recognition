@@ -11,12 +11,13 @@ rule defaults to (the candidate list: every vehicle/pedestrian contact, repeats 
 
 `scripts/run_pipeline.py` is deliberately not reused: it is a batch driver over a folder of videos, with its own
 run directory and an overlay-video step, which does not fit a GUI that owns the file list, the output folder and the
-progress protocol. See docs/adr/0004-gui-yield-image-rule-wiring.md.
+progress protocol. See docs/adr/0004-gui-yield-image-rule-wiring.md. The driver does build its first three steps
+with this module's `segment_command` / `track_command` / `rule_command`, so the flags and their defaults (model path,
+sampling interval, detector, conf, imgsz) are written once and a GUI run and a CLI run see the same input.
 """
 from __future__ import annotations
 
 import json
-import os
 import queue
 import subprocess
 import sys
@@ -25,15 +26,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import clip_artifacts
+
 ROOT = Path(__file__).resolve().parent
 WORK_DIRNAME = "yield"
 MODEL_ENV = "TRAFFIC_CROSSWALK_MODEL"
 DEFAULT_MODEL = Path("runtime") / "models" / "mask2former-mapillary"
 DEVICE_ENV = "TRAFFIC_DEVICE"
 WEIGHTS_ENV = "TRAFFIC_DETECTOR_WEIGHTS"
-DEFAULT_WEIGHTS = Path("runtime") / "smoke-assets" / "yolo26x.pt"  # scripts/run_pipeline.py's default too
-# Same values as scripts/run_pipeline.py, so a GUI run and a CLI run see the same input.
-SEGMENT_EVERY_SECONDS = 0.1  # one crosswalk mask per 0.1 s: stride 3 at 25-30 fps, 6 at 60 fps
+DEFAULT_WEIGHTS = Path("runtime") / "smoke-assets" / "yolo26x.pt"
+# One crosswalk mask per 0.1 s: stride 3 at 25-30 fps (as before), 6 at 60 fps, half the segmentation; on the 7
+# labelled clips strict stayed at 14/17 hits with 50 -> 51 candidates, review unchanged, crosswalk geometry 11 -> 12.
+SEGMENT_EVERY_SECONDS = 0.1
 CONF = 0.15
 IMGSZ = 1280
 
@@ -82,6 +86,46 @@ def detector_weights(environ, root=ROOT) -> Path:
     return weights
 
 
+def segment_command(python, video, model, output) -> tuple:
+    """segment_crosswalk.py for one video: one mask per SEGMENT_EVERY_SECONDS into <output>/masks.npz."""
+    return (str(python), str(ROOT / "scripts" / "segment_crosswalk.py"), "--video", str(video), "--model", str(model),
+            "--every-seconds", str(SEGMENT_EVERY_SECONDS), "--output", str(output))
+
+
+def track_command(python, video, weights, output, device="0", conf=CONF, imgsz=IMGSZ) -> tuple:
+    """track_video.py for one video into <output>/raw_tracks.json; weights None leaves track_video's own default."""
+    return (str(python), str(ROOT / "scripts" / "track_video.py"), "--video", str(video),
+            *(("--weights", str(weights)) if weights else ()),
+            "--conf", str(conf), "--imgsz", str(imgsz), "--device", str(device), "--output", str(output))
+
+
+def rule_command(python, video, work, events, geometry=None, include_waiting=False) -> tuple:
+    """yield_image_rule.py on <work>'s masks and tracks; without geometry/include_waiting it runs the rule's defaults."""
+    return (str(python), str(ROOT / "yield_image_rule.py"), "--video", str(video),
+            "--masks", str(Path(work) / clip_artifacts.MASKS), "--tracks", str(Path(work) / clip_artifacts.TRACKS),
+            *(("--geometry", str(geometry)) if geometry else ()), "--output", str(events),
+            *(("--include-waiting",) if include_waiting else ()))
+
+
+def stale_masks(masks, video):
+    """Why the masks.npz already at `masks` must not be reused for `video`, or None to reuse it.
+
+    The interval is read back from the mask frame numbers (`clip_artifacts.mask_stride`), so masks segmented before a
+    change of SEGMENT_EVERY_SECONDS (or with a hand-picked --stride) are redone instead of silently judged with.
+    When either side cannot be read (one mask, or a video cv2 cannot open) the masks are reused."""
+    have = clip_artifacts.mask_stride(masks)
+    try:
+        fps = clip_artifacts.video_info(video).fps
+    except Exception:  # noqa: BLE001 - no cv2, or not a video: nothing to compare against
+        fps = 0
+    if not have or not fps:
+        return None
+    want = clip_artifacts.stride_for(fps, SEGMENT_EVERY_SECONDS)
+    if have == want:
+        return None
+    return f"既有遮罩每 {have} 格一張，現在應為每 {want} 格（{SEGMENT_EVERY_SECONDS} 秒）"
+
+
 def workspace(output, video) -> Path:
     """Where one video's intermediates and events go: <output>/yield/<video stem>/."""
     return Path(output) / WORK_DIRNAME / Path(video).stem
@@ -92,32 +136,11 @@ def plan(video, work, environ=None) -> list:
     environ = dict(environ or {})
     video, work = Path(video), Path(work)
     modern = interpreter(environ, "TRAFFIC_MODERN_PYTHON")
-    segmentation = (
-        interpreter(environ, "TRAFFIC_LABELING_PYTHON"),
-        str(ROOT / "scripts" / "segment_crosswalk.py"),
-        "--video", str(video),
-        "--model", str(crosswalk_model(environ)),
-        "--every-seconds", str(SEGMENT_EVERY_SECONDS),
-        "--output", str(work / "seg"),
-    )
-    tracking = (
-        modern,
-        str(ROOT / "scripts" / "track_video.py"),
-        "--video", str(video),
-        "--weights", str(detector_weights(environ)),
-        "--conf", str(CONF),
-        "--imgsz", str(IMGSZ),
-        "--device", environ.get(DEVICE_ENV, "0"),
-        "--output", str(work / "tracks"),
-    )
-    rule = (
-        modern,
-        str(ROOT / "yield_image_rule.py"),
-        "--video", str(video),
-        "--masks", str(work / "seg" / "masks.npz"),
-        "--tracks", str(work / "tracks" / "raw_tracks.json"),
-        "--output", str(work / "events.jsonl"),
-    )
+    segmentation = segment_command(interpreter(environ, "TRAFFIC_LABELING_PYTHON"), video, crosswalk_model(environ),
+                                   work / clip_artifacts.MASKS.parent)
+    tracking = track_command(modern, video, detector_weights(environ), work / clip_artifacts.TRACKS.parent,
+                             environ.get(DEVICE_ENV, "0"))
+    rule = rule_command(modern, video, work, work / "events.jsonl")
     return [
         Step(1, "斑馬線分割", segmentation),
         Step(2, "偵測與追蹤", tracking),
