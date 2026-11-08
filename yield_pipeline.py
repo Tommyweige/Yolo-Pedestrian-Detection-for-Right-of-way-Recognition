@@ -18,15 +18,13 @@ sampling interval, detector, conf, imgsz) are written once and a GUI run and a C
 from __future__ import annotations
 
 import json
-import queue
-import subprocess
 import sys
-import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import clip_artifacts
+from child_process import Child
 
 ROOT = Path(__file__).resolve().parent
 WORK_DIRNAME = "yield"
@@ -151,60 +149,18 @@ def plan(video, work, environ=None) -> list:
 def execute(command, label="", cancelled=lambda: False, on_process=lambda process: None) -> str:
     """Run one step from the repository root; returns "ok" or "cancelled", raises on failure.
 
-    The child's output is kept in a bounded queue by a reader thread so a chatty step cannot block on a full pipe,
-    and the last lines are reported when it fails.
+    The child is run by `child_process.Child` (bounded output queue, cancellation, cleanup); the last lines of its
+    output are reported when it fails.
     """
-    command = [str(part) for part in command]
-    process = subprocess.Popen(
-        command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-    )
-    on_process(process)
-    lines = queue.Queue(maxsize=512)
-
-    def read_lines():
-        for line in process.stdout:
-            lines.put(line)
-        lines.put(None)
-
-    reader = threading.Thread(target=read_lines, daemon=True)
-    reader.start()
-    tail, stopped = [], False
-    try:
-        while True:
-            if cancelled() and process.poll() is None:
-                stopped = True
-                process.terminate()
-            try:
-                line = lines.get(timeout=0.1)
-            except queue.Empty:
-                if process.poll() is not None and not reader.is_alive():
-                    break
-                continue
-            if line is None:
-                break
-            tail = (tail + [line.strip()])[-12:]
-        code = process.wait()
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        while reader.is_alive():  # drain so the reader can close its pipe
-            try:
-                lines.get(timeout=0.1)
-            except queue.Empty:
-                pass
-        process.stdout.close()
-        on_process(None)
-    if stopped:
+    child = Child(command, cwd=ROOT, cancelled=cancelled, on_process=on_process)
+    for _ in child.lines():
+        pass
+    if child.stopped:
         return "cancelled"
-    if code:
+    if child.code:
+        command = child.command
         name = label or Path(command[1] if len(command) > 1 else command[0]).name
-        raise RuntimeError(f"{name} 失敗（結束碼 {code}）：\n" + "\n".join(tail))
+        raise RuntimeError(f"{name} 失敗（結束碼 {child.code}）：\n" + "\n".join(child.tail))
     return "ok"
 
 

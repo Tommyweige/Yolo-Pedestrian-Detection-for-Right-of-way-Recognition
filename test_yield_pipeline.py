@@ -153,14 +153,11 @@ class ExecuteTest(unittest.TestCase):
         self.assertIn("不禮讓規則", str(caught.exception))
 
     def test_cancellation_terminates_the_step(self):
-        with mock.patch("yield_pipeline.subprocess.Popen") as popen:
-            popen.return_value.poll.return_value = None
-            popen.return_value.wait.return_value = -15
-            popen.return_value.stdout = open(__file__, encoding="utf-8")
-            self.addCleanup(popen.return_value.stdout.close)
-            outcome = yield_pipeline.execute([sys.executable, "-c", "pass"], cancelled=lambda: True)
+        seen = []
+        outcome = yield_pipeline.execute([sys.executable, "-c", "import time; time.sleep(60)"],
+                                         cancelled=lambda: True, on_process=seen.append)
         self.assertEqual(outcome, "cancelled")
-        popen.return_value.terminate.assert_called()
+        self.assertIsNotNone(seen[0].returncode)  # the child was terminated, not waited out
 
     def test_the_child_is_handed_over_and_released_around_the_step(self):
         seen = []

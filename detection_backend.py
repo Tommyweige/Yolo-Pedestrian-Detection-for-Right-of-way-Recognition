@@ -1,17 +1,16 @@
-"""Shared detection paths and subprocess runner; no GUI imports."""
+"""Shared detection paths and the GUI's detection and yield runs (children run by child_process.Child); no GUI imports."""
+import contextlib
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import math
-import queue
-import threading
 import time
 from pathlib import Path
 
 import clip_artifacts
 import yield_pipeline
+from child_process import Child
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 YOLO_PROJECT_ROOT = PROJECT_ROOT / "YOLOv8_DeepSORT_Object_Tracking"
@@ -298,59 +297,19 @@ def run_detection(videos, output, model, task, angle=0, cancelled=lambda: False,
                        f"source={_hydra_value(source)}", f"project={_hydra_value(output_dir)}",
                        f"name={_hydra_value(video.name)}", f"imgsz={imgsz}",
                        "conf=0.7", "iou=0.3", "augment=False", f"half={half}"]
-            process = subprocess.Popen(command, cwd=DETECT_DIR, env=environment,
-                                       stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       text=True, encoding="utf-8", errors="replace")
-            on_process(process)
-            lines = queue.Queue(maxsize=128)
-
-            def read_lines():
-                for line in process.stdout:
-                    lines.put(line)
-                lines.put(None)
-
-            reader = threading.Thread(target=read_lines, daemon=True)
-            reader.start()
-            tail = []
-            try:
-                while True:
-                    if cancelled() and process.poll() is None:
-                        process.terminate()
-                    try:
-                        line = lines.get(timeout=0.1)
-                    except queue.Empty:
-                        continue
-                    if line is None:
-                        break
-                    tail = (tail + [line.strip()])[-12:]
+            child = Child(command, cwd=DETECT_DIR, env=environment, cancelled=cancelled, on_process=on_process)
+            with contextlib.closing(child.lines()) as lines:  # closing: an abandoned loop still stops the child
+                for line in lines:
                     match = re.search(r"\((\d+)/(\d+)\)", line)
                     if match:
                         current, total = map(int, match.groups())
                         yield {"type": "progress", "index": index, "current": current,
                                "total": total, "message": line.strip()}
-                code = process.wait()
-            finally:
-                if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                # Drain the bounded queue so the reader can close its pipe.
-                while reader.is_alive():
-                    try:
-                        lines.get(timeout=0.1)
-                    except queue.Empty:
-                        pass
-                process.stdout.close()
-                on_process(None)
             if cancelled():
                 yield {"type": "cancelled"}
                 return
-            if code:
-                raise RuntimeError(f"偵測失敗（{code}）：{video.name}\n" + "\n".join(tail))
+            if child.code:
+                raise RuntimeError(f"偵測失敗（{child.code}）：{video.name}\n" + "\n".join(child.tail))
             yield {"type": "progress", "index": index + 1, "current": 1, "total": 1,
                    "message": f"已完成：{video.name}"}
     yield {"type": "done"}
