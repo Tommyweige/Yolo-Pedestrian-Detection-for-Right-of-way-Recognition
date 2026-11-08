@@ -74,7 +74,11 @@ def build_dataset(entries, tolerance=1.0):
         truth_times = list(entry["truth_times"])
 
         found = candidates(entry["mask_at"], tracks, fps, src_size)
-        index = yield_features.index_tracks(tracks)
+        # detect() merges duplicate vehicle tracks and reports the merged id, so index those same tracks: from the raw
+        # ones a merged vehicle's features would cover only the fragment whose id survived.
+        loose = yield_image_rule.Params(fps=fps, src_size=src_size, **LOOSE)
+        index = yield_features.index_tracks(yield_image_rule.merge_duplicate_tracks(tracks, loose)
+                                            if loose.merge_duplicates else tracks)
         people_by_frame = _people_by_frame(index)
         for candidate in found:
             features = yield_features.candidate_features(index, candidate, fps, src_size, people_by_frame)

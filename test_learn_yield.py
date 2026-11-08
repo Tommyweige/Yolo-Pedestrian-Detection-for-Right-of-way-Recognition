@@ -75,6 +75,21 @@ def test_candidates_honour_an_explicit_last_frame():
     assert ly.candidates(entry["mask_at"], entry["tracks"], entry["fps"], entry["src_size"], last_frame=0) == []
 
 
+def test_features_are_read_from_the_tracks_the_rule_judged(monkeypatch):
+    """detect() merges duplicate vehicle tracks and reports the merged id; the features must see the merged track too."""
+    import yield_image_rule
+    seen = []
+    real = ly.yield_features.index_tracks
+    monkeypatch.setattr(ly.yield_features, "index_tracks", lambda tracks: seen.append(tracks) or real(tracks))
+    entries = synthetic_entries()
+    entries[0]["tracks"] = entries[0]["tracks"] + [track(11, "car", CAR_ON, range(1, 31))]  # a second id, same car
+    ly.build_dataset(entries)
+    assert len(seen[0]) == 2  # person + one car, not the raw three tracks
+    for entry, indexed in zip(entries, seen):
+        params = yield_image_rule.Params(fps=entry["fps"], src_size=entry["src_size"], **ly.LOOSE)
+        assert indexed == yield_image_rule.merge_duplicate_tracks(entry["tracks"], params)
+
+
 def test_build_dataset_shapes_labels_and_truth_counts():
     dataset = ly.build_dataset(synthetic_entries())
     n = len(dataset["times"])
