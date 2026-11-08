@@ -314,8 +314,9 @@ alarms on others. Defaults are therefore unchanged. What would move this: more l
 not more tuning on these seven.
 
 Note (2026-11-08): every number in this section and the one above was scored at a fixed 1.0 s tolerance (the `--tolerance`
-default of `eval_rule.py`, `tune_rule_lovo.py` and `learn_yield.py`, which stays 1.0 s), not ADR 0003's 1.25 s; the frozen
-1.25 s applies only to `eval_rule_events.py` and `eval_constructions.py`.
+default of `eval_rule.py`, `tune_rule_lovo.py` and `learn_yield.py` at the time), not ADR 0003's 1.25 s. `tune_rule_lovo.py`
+and `learn_yield.py` now default to the frozen 1.25 s too and refuse a `--cache` built at another tolerance (`eval_rule.py`
+stays at 1.0 s); their rerun at both tolerances is in ADR 0003's 2026-11-08 amendment.
 The 27-config grid also lacked the current defaults (`lateral_vehicle_widths` 3.0, `min_inside_person_heights` 0.03);
 `tune_rule_lovo.py`'s grid now holds them (48 configs), so its numbers are not comparable with the 0.465 row.
 The `learn_yield.py` row predates a fix: its features came from the raw tracks while the rule reported merged vehicles,

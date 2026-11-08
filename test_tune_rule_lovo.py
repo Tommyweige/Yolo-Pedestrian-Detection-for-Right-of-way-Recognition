@@ -3,7 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -78,7 +78,8 @@ class TuneRuleLovo(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as folder:
             cache = Path(folder) / "cache.json"
-            cache.write_text(json.dumps({"table": table, "grid": grid}), encoding="utf-8")
+            cache.write_text(json.dumps({"table": table, "grid": grid, "tolerance": t.scoring.TOLERANCE_S}),
+                             encoding="utf-8")
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = t.main(["--cache", str(cache)])
@@ -87,6 +88,16 @@ class TuneRuleLovo(unittest.TestCase):
             self.assertIn("lovo", last)
             self.assertIn("chosen", last)
             self.assertEqual(set(last["chosen"]), {"v1", "v2"})
+
+    def test_a_cache_counted_at_another_tolerance_is_refused(self):
+        # a cache without the key predates the frozen tolerance and was counted at 1.0 s
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder) / "cache.json"
+            cache.write_text(json.dumps({"table": {}, "grid": {}}), encoding="utf-8")
+            err = io.StringIO()
+            with redirect_stderr(err):
+                self.assertEqual(t.main(["--cache", str(cache)]), 2)
+            self.assertIn("built at an unrecorded tolerance, not 1.25s", err.getvalue())
 
 
 if __name__ == "__main__":

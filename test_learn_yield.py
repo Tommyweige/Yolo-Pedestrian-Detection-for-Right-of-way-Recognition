@@ -140,6 +140,7 @@ def test_main_reads_a_cache_and_prints_a_json_summary(tmp_path, capsys):
         "baseline": dataset["baseline"],
         "feature_names": dataset["feature_names"],
         "truth": truth,
+        "tolerance": ly.event_scoring.TOLERANCE_S,
     }
     cache = tmp_path / "cache.json"
     cache.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -159,3 +160,12 @@ def test_main_reads_a_cache_and_prints_a_json_summary(tmp_path, capsys):
     assert set(summary) == {"baseline", "logo"}
     assert set(summary["logo"]) == {"1.0", "0.1"}
     assert summary["baseline"]["true_positive"] == 1
+
+
+def test_a_cache_built_at_another_tolerance_is_refused(tmp_path, capsys):
+    # its labels were matched at 1.0 s; scoring the baseline at 1.25 s next to them would mix two yardsticks
+    cache = tmp_path / "cache.json"
+    cache.write_text(json.dumps({"X": [], "y": [], "tolerance": 1.0}), encoding="utf-8")
+
+    assert ly.main(["--cache", str(cache)]) == 2
+    assert "built at tolerance 1.0s, not 1.25s" in capsys.readouterr().err

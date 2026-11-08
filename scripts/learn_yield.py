@@ -62,7 +62,7 @@ def _people_by_frame(index):
     return counts
 
 
-def build_dataset(entries, tolerance=1.0):
+def build_dataset(entries, tolerance=event_scoring.TOLERANCE_S):
     """Turn entries ({"name","mask_at","tracks","fps","src_size","truth_times"}) into a dataset."""
     rows, labels, groups, times = [], [], [], []
     truth_counts, baseline = {}, {}
@@ -108,7 +108,7 @@ def build_dataset(entries, tolerance=1.0):
     }
 
 
-def baseline_score(dataset, truth, tolerance=1.0):
+def baseline_score(dataset, truth, tolerance=event_scoring.TOLERANCE_S):
     """Event-level baseline score, treating every baseline event as a suspected failure to yield."""
     names = list(truth)
     for name in dataset.get("baseline", {}):
@@ -157,7 +157,7 @@ def _repo_path(value):
     return path if path.is_absolute() else ROOT / path
 
 
-def _cache_payload(dataset, truth):
+def _cache_payload(dataset, truth, tolerance):
     return {
         "X": [[float(value) for value in row] for row in dataset["X"]],
         "y": [int(value) for value in dataset["y"]],
@@ -167,6 +167,7 @@ def _cache_payload(dataset, truth):
         "baseline": dataset["baseline"],
         "feature_names": list(dataset["feature_names"]),
         "truth": {name: [float(value) for value in values] for name, values in truth.items()},
+        "tolerance": float(tolerance),  # the candidates were labelled at this tolerance
     }
 
 
@@ -203,15 +204,23 @@ def main(argv=None):
     parser.add_argument("--run", default="datasets/eval-run2", help="folder holding <stem>/seg/masks.npz and <stem>/tracks/raw_tracks.json")
     parser.add_argument("--videos", default="datasets/來源影片")
     parser.add_argument("--labels", default="labels")
-    parser.add_argument("--tolerance", type=float, default=1.0)
+    parser.add_argument("--tolerance", type=float, default=event_scoring.TOLERANCE_S,
+                        help="matching tolerance in seconds (default: the frozen ADR 0003 value)")
     parser.add_argument("--l2", type=float, nargs="+", default=[1.0], help="one or more L2 strengths, each validated with LOGO")
-    parser.add_argument("--cache", help="dataset cache JSON: read when present, otherwise build and write it")
+    parser.add_argument("--cache", help="dataset cache JSON: read when present (refused when built at another "
+                                        "tolerance), otherwise build and write it")
     parser.add_argument("--model-out", help="write the model trained on all candidates as JSON")
     args = parser.parse_args(argv)
 
     cache_path = _repo_path(args.cache) if args.cache else None
     if cache_path is not None and cache_path.exists():
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if payload.get("tolerance") != args.tolerance:  # its labels and the baseline would disagree
+            built = payload.get("tolerance")
+            built = "an unrecorded tolerance" if built is None else f"tolerance {built}s"
+            print(f"{cache_path} was built at {built}, not {args.tolerance}s; "
+                  "delete it or pass a new --cache path", file=sys.stderr)
+            return 2
         dataset = _dataset_from_cache(payload)
         truth = {name: [float(value) for value in times] for name, times in payload.get("truth", {}).items()}
     else:
@@ -220,7 +229,7 @@ def main(argv=None):
         truth = {entry["name"]: list(entry["truth_times"]) for entry in entries}
         if cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(json.dumps(_cache_payload(dataset, truth), ensure_ascii=False), encoding="utf-8")
+            cache_path.write_text(json.dumps(_cache_payload(dataset, truth, args.tolerance), ensure_ascii=False), encoding="utf-8")
 
     baseline = baseline_score(dataset, truth, args.tolerance)
     print("baseline: " + _format(baseline))

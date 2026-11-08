@@ -108,7 +108,8 @@ def nested_lovo(table: dict, cfg_list: list[dict], default: dict) -> dict:
             "default_f1": default_f1}
 
 
-def count_table(run_dir, videos_dir, labels_dir, cfg_list, geometry="image", tolerance=1.0, log=print) -> dict:
+def count_table(run_dir, videos_dir, labels_dir, cfg_list, geometry="image", tolerance=scoring.TOLERANCE_S,
+                log=print) -> dict:
     run_dir, videos_dir, labels_dir = Path(run_dir), Path(videos_dir), Path(labels_dir)
     videos = sorted(p for p in videos_dir.iterdir()
                     if p.suffix.lower() in clip_artifacts.VIDEO_SUFFIXES)
@@ -144,8 +145,10 @@ def main(argv=None) -> int:
     parser.add_argument("--videos", default="datasets/來源影片")
     parser.add_argument("--labels", default="labels")
     parser.add_argument("--geometry", default="image", choices=("image", "crosswalk"))
-    parser.add_argument("--tolerance", type=float, default=1.0)
-    parser.add_argument("--cache", help="JSON file with {table, grid}; written after a fresh run")
+    parser.add_argument("--tolerance", type=float, default=scoring.TOLERANCE_S,
+                        help="matching tolerance in seconds (default: the frozen ADR 0003 value)")
+    parser.add_argument("--cache", help="JSON file with {table, grid, tolerance}; written after a fresh run, "
+                                        "refused when built at another tolerance")
     parser.add_argument("--log", help="optional file to append progress lines to (UTF-8)")
     args = parser.parse_args(argv)
 
@@ -163,6 +166,12 @@ def main(argv=None) -> int:
         cache_path = Path(args.cache) if args.cache else None
         if cache_path and cache_path.exists():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("tolerance") != args.tolerance:  # the counts were matched at the cached tolerance
+                built = cached.get("tolerance")
+                built = "an unrecorded tolerance" if built is None else f"tolerance {built}s"
+                print(f"{cache_path} was built at {built}, not {args.tolerance}s; "
+                      "delete it or pass a new --cache path", file=sys.stderr)
+                return 2
             grid, table = cached["grid"], cached["table"]
         else:
             grid = DEFAULT_GRID
@@ -171,7 +180,8 @@ def main(argv=None) -> int:
                                 cfg_list, args.geometry, args.tolerance, log)
             if cache_path:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(json.dumps({"table": table, "grid": grid}, ensure_ascii=False, indent=2),
+                cache_path.write_text(json.dumps({"table": table, "grid": grid, "tolerance": args.tolerance},
+                                                 ensure_ascii=False, indent=2),
                                       encoding="utf-8")
 
         cfg_list = configs(grid)
