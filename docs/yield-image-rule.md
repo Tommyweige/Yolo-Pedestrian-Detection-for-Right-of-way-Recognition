@@ -316,3 +316,5 @@ Note (2026-11-08): every number in this section and the one above was scored at 
 default of `eval_rule.py`, `tune_rule_lovo.py` and `learn_yield.py`), not ADR 0003's 1.25 s.
 The 27-config grid also lacked the current defaults (`lateral_vehicle_widths` 3.0, `min_inside_person_heights` 0.03);
 `tune_rule_lovo.py`'s grid now holds them (48 configs), so its numbers are not comparable with the 0.465 row.
+The `learn_yield.py` row predates a fix: its features came from the raw tracks while the rule reported merged vehicles,
+so a merged vehicle's features covered one fragment; rebuild `--cache` before comparing with it.
