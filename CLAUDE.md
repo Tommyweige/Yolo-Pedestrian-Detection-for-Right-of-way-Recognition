@@ -14,7 +14,7 @@ Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/d
 
 ### /implement-spec 分流規則
 
-模型、派工方式、驗收與重做、底線：一律照全域 `~/.claude/CLAUDE.md` 的「三層分工與 /implement-spec 分流規則」。派工用全域的 `~/.claude/skills/dispatch-worker/dispatch.py`，不用本 repo `.claude/skills/dispatch-worker/` 的舊副本；DeepSeek 重做兩次仍失敗改由 Claude Opus 5.5 接手，不用 `.claude/agents/sonnet-implementer.md`。
+模型、派工方式、驗收與重做：一律照全域 `~/.claude/skills/dispatch-worker/implement-spec-rules.md`，派工用全域的 `dispatch-worker`。
 
 本專案特有（寫派工單時照這裡）：
 - 測試指令：`python -m pytest <測試檔>`；測試檔在 repo 根目錄，`test_*.py`。
